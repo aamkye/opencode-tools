@@ -14,17 +14,35 @@ export function tokenReportCommands(
   api: TuiPluginApi,
   setRangeDialogClose: (close: () => void) => void = () => {},
 ): TuiCommand[] {
+  let reportSessionID: string | undefined
+
+  async function resolveHomeSessionID(): Promise<string | undefined> {
+    if (!reportSessionID) {
+      try {
+        const result = await api.client.session.create({ body: { title: "Token Reports" } })
+        if (result.error || typeof result.data?.id !== "string" || result.data.id === "") {
+          api.ui.toast({ message: "Unable to create token report session" })
+          return undefined
+        }
+        reportSessionID = result.data.id
+      } catch {
+        api.ui.toast({ message: "Unable to create token report session" })
+        return undefined
+      }
+    }
+
+    api.route.navigate("session", { sessionID: reportSessionID })
+    return reportSessionID
+  }
+
   return TOKEN_REPORT_COMMANDS.map((spec) => ({
     name: `aamkye.${spec.id}`,
     title: spec.kind === "between" ? "Tokens used (Date Range)" : spec.title,
     namespace: "palette",
     slashName: spec.id,
     async run() {
-      const sessionID = activeSessionID(api)
-      if (!sessionID) {
-        api.ui.toast({ message: "Open a session to view token usage" })
-        return
-      }
+      const sessionID = activeSessionID(api) ?? await resolveHomeSessionID()
+      if (!sessionID) return
       if (spec.id !== "tokens_between") {
         await persistTokenReport(api, sessionID, spec.id)
         return

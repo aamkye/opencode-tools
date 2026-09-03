@@ -80,6 +80,9 @@ declare module "@opencode-ai/plugin/tui" {
     }
     client: {
       session: {
+        create(input: {
+          body: { title?: string; parentID?: string }
+        }): TuiClientResult<Session>
         list(input: { directory?: string }): TuiClientResult<readonly Session[]>
         messages(input: { sessionID: string; directory?: string }): TuiClientResult<readonly { info: Message }[]>
         prompt(input: {

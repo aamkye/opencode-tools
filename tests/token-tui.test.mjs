@@ -16,17 +16,30 @@ const TOKEN_COMMANDS = [
   "tokens_between",
 ]
 
-function createTuiApi({ route = { name: "home" }, prompt } = {}) {
+function createTuiApi({
+  route = { name: "home" },
+  create = async () => ({ data: { id: "token-report-session" } }),
+  prompt,
+} = {}) {
   const api = {
     commands: [],
     dialogs: [],
+    navigations: [],
+    operations: [],
     prompts: [],
     routes: [],
+    sessionCreates: [],
     sessionPrompts: [],
     toasts: [],
     client: {
       session: {
+        async create(input) {
+          api.operations.push("session.create")
+          api.sessionCreates.push(input)
+          return await create(input)
+        },
         async prompt(input) {
+          api.operations.push("session.prompt")
           api.sessionPrompts.push(input)
           await prompt?.(input)
         },
@@ -57,6 +70,10 @@ function createTuiApi({ route = { name: "home" }, prompt } = {}) {
       register(routes) {
         api.routes.push(...routes)
       },
+      navigate(name, params) {
+        api.operations.push("route.navigate")
+        api.navigations.push({ name, params })
+      },
     },
     ui: {
       toast(input) {
@@ -71,6 +88,7 @@ function createTuiApi({ route = { name: "home" }, prompt } = {}) {
           api.dialogs.push({ kind: "clear" })
         },
         replace(render, onClose) {
+          api.operations.push("dialog.replace")
           api.dialogs.push({ kind: "replace", render, onClose })
         },
       },
@@ -128,14 +146,88 @@ test("token commands persist a no-reply report in the active session", async () 
   }
 })
 
-test("token command without a session shows a toast without a client call", async () => {
+test("home token command creates, opens, and persists to a report session", async () => {
   const api = createTuiApi()
 
   registerControlledTokenReportTui(api)
   await api.commandBySlash("tokens_today").run()
 
-  assert.equal(api.sessionPrompts.length, 0)
-  assert.deepEqual(api.toasts, [{ message: "Open a session to view token usage" }])
+  assert.deepEqual(api.sessionCreates, [{ body: { title: "Token Reports" } }])
+  assert.deepEqual(api.navigations, [{ name: "session", params: { sessionID: "token-report-session" } }])
+  assert.equal(api.sessionPrompts[0].path.id, "token-report-session")
+})
+
+test("home token commands reuse their report session", async () => {
+  const api = createTuiApi()
+
+  registerControlledTokenReportTui(api)
+  await api.commandBySlash("tokens_today").run()
+  await api.commandBySlash("tokens_daily").run()
+
+  assert.deepEqual(api.sessionCreates, [{ body: { title: "Token Reports" } }])
+  assert.deepEqual(api.navigations, [
+    { name: "session", params: { sessionID: "token-report-session" } },
+    { name: "session", params: { sessionID: "token-report-session" } },
+  ])
+  assert.deepEqual(api.sessionPrompts.map((input) => input.path.id), ["token-report-session", "token-report-session"])
+})
+
+test("home token command stops after session creation errors", async () => {
+  const api = createTuiApi({
+    create: async () => ({ error: new Error("controlled creation failure") }),
+  })
+
+  registerControlledTokenReportTui(api)
+  await api.commandBySlash("tokens_today").run()
+
+  assert.deepEqual(api.sessionCreates, [{ body: { title: "Token Reports" } }])
+  assert.equal(api.toasts.length, 1)
+  assert.deepEqual(api.navigations, [])
+  assert.deepEqual(api.sessionPrompts, [])
+  assert.deepEqual(api.dialogs, [])
+})
+
+test("home token command stops after an empty session creation result", async () => {
+  const api = createTuiApi({ create: async () => ({}) })
+
+  registerControlledTokenReportTui(api)
+  await api.commandBySlash("tokens_today").run()
+
+  assert.deepEqual(api.sessionCreates, [{ body: { title: "Token Reports" } }])
+  assert.equal(api.toasts.length, 1)
+  assert.deepEqual(api.navigations, [])
+  assert.deepEqual(api.sessionPrompts, [])
+  assert.deepEqual(api.dialogs, [])
+})
+
+test("home tokens_between creates a report session before opening its dialog", async () => {
+  const api = createTuiApi()
+
+  registerControlledTokenReportTui(api)
+  await api.commandBySlash("tokens_between").run()
+
+  assert.deepEqual(api.sessionCreates, [{ body: { title: "Token Reports" } }])
+  assert.deepEqual(api.navigations, [{ name: "session", params: { sessionID: "token-report-session" } }])
+  assert.ok(api.operations.indexOf("session.create") < api.operations.indexOf("dialog.replace"))
+  assert.ok(api.operations.indexOf("route.navigate") < api.operations.indexOf("dialog.replace"))
+  assert.equal(api.dialogs[0].kind, "replace")
+  api.dialogs[0].render()
+  api.route.current = { name: "home" }
+  api.prompts[0].onConfirm("2026-01-01 2026-01-15")
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(api.sessionPrompts[0].path.id, "token-report-session")
+})
+
+test("active-session token command does not create or navigate", async () => {
+  const api = createTuiApi({ route: { name: "session", params: { sessionID: "s1" } } })
+
+  registerControlledTokenReportTui(api)
+  await api.commandBySlash("tokens_today").run()
+
+  assert.deepEqual(api.sessionCreates, [])
+  assert.deepEqual(api.navigations, [])
+  assert.equal(api.sessionPrompts[0].path.id, "s1")
 })
 
 test("tokens_between Enter confirms the native prompt", async () => {
