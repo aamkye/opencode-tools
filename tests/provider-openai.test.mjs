@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
 import test, { after } from "node:test"
@@ -370,6 +370,31 @@ test("reports reactive OpenAI configuration from credentials", async (t) => {
   openai.setCredential(null)
   await flushEffects()
   assert.equal(openai.adapter.configured(), false)
+})
+
+test("prefers ChatGPT OAuth file credentials over provider API keys", async (t) => {
+  const authDirectory = resolve(isolatedProviderHome, "opencode")
+  const authPath = resolve(authDirectory, "auth.json")
+  mkdirSync(authDirectory, { recursive: true })
+  writeFileSync(authPath, JSON.stringify({
+    openai: {
+      type: "oauth",
+      access: "chatgpt-oauth-token",
+      accountId: "chatgpt-account",
+    },
+  }))
+  t.after(() => rmSync(authPath, { force: true }))
+
+  let authorization
+  createTestAdapter(t, {
+    fetch: async (_url, options) => {
+      authorization = options.headers.Authorization
+      return quotaResponse()
+    },
+  })
+  await flushEffects()
+
+  assert.equal(authorization, "Bearer chatgpt-oauth-token")
 })
 
 test("uses the default and custom provider polling intervals while keeping the one-second clock", async (t) => {

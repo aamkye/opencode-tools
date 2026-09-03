@@ -288,7 +288,7 @@ export function createOpenAiProvider(api: TuiPluginApi, options: QuotaProviderOp
       providerId: "openai",
       refreshIntervalMs: options.refreshIntervalMs,
       exhaustedPollMs: EXHAUSTED_POLL_MS,
-      resolveCredential: () => findOpenAiAuthFromProviders(api.state.provider) ?? findOpenAiAuthFromFiles(),
+      resolveCredential: () => findOpenAiAuthFromFiles() ?? findOpenAiAuthFromProviders(api.state.provider),
       credentialFingerprint: (auth) => `${auth.access}\u0000${auth.accountId ?? ""}`,
       fetch: fetchOpenAiQuota,
       quotaState,
