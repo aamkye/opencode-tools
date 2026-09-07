@@ -60,6 +60,10 @@ Fully restart OpenCode after deployment.
   or `1M`, and show remaining percentage plus reset countdown.
 - **Plan type** — Plus / Pro / Pro Lite / Team.
 - **Limited indicator** — shows when rate limit is reached.
+- **ChatGPT OAuth only** — OpenAI subscription quota uses the ChatGPT usage
+  endpoint and requires a valid ChatGPT OAuth session. OpenAI API keys do not
+  expose ChatGPT Plus or Pro quota. A rejected session displays `ChatGPT OAuth
+  session required`.
 
 ### OpenCode Go
 
@@ -68,6 +72,10 @@ Fully restart OpenCode after deployment.
 - **Shared refresh behavior** — uses the configured polling interval,
   one-second countdowns, reset-boundary refresh, and a ten-minute stale horizon
   without exhausted backoff.
+- **Configuration guidance** — OpenCode Go requires both
+  `quota.opencodego.workspaceId` and `quota.opencodego.workspaceToken`; without
+  them the panel stays visible with `Configuration required` and sends no
+  console request.
 
 ### MCP
 
@@ -279,6 +287,10 @@ duplicate panels.
 workspaceToken is the plaintext auth cookie value. Keep both values only in
 local `.opencode/tui.json`: they must not be committed or shared, and you must
 rotate the console session when it expires, is revoked, or is exposed.
+
+OpenCode Go requires both `quota.opencodego.workspaceId` and
+`quota.opencodego.workspaceToken`; without them the panel stays visible with
+`Configuration required` and sends no console request.
 
 The provider sends these workspace credentials only to the fixed
 `https://opencode.ai` origin; they do not replace the OpenCode-managed
@@ -926,21 +938,29 @@ shown above. Legacy files and aliases are intentionally not provided.
 ### OpenAI
 
 1. Reads the OAuth access token from the `openai` provider entry in
-   `auth.json` (also checks `codex`, `chatgpt`, `opencode` keys).
+   `auth.json` (also checks `codex`, `chatgpt`, `opencode` keys). OpenAI
+   subscription quota uses the ChatGPT usage endpoint and requires a valid
+   ChatGPT OAuth session; OpenAI API keys do not expose ChatGPT Plus or Pro
+   quota.
 2. Extracts the `chatgpt_account_id` from the JWT for the
    `ChatGPT-Account-Id` header.
 3. Polls `https://chatgpt.com/backend-api/wham/usage` every 10s (5min
    when the primary window is exhausted).
 4. Renders the plan type and available primary/secondary quota windows with
    compact labels derived from each API-reported duration.
+5. Clears cached quota and displays `ChatGPT OAuth session required` after the
+   usage endpoint rejects the OAuth session.
 
 ### OpenCode Go
 
-1. Sends the configured workspace credentials only to the fixed
+1. Requires both `quota.opencodego.workspaceId` and
+   `quota.opencodego.workspaceToken`; without them it displays `Configuration
+   required` and sends no console request.
+2. Sends configured workspace credentials only to the fixed
    `https://opencode.ai` origin.
-2. Reads quota data from the authenticated page's undocumented Solid hydration
+3. Reads quota data from the authenticated page's undocumented Solid hydration
    contract and fails closed when that contract changes.
-3. Renders the rolling 5H, weekly 7D, and subscription month 1M windows with
+4. Renders the rolling 5H, weekly 7D, and subscription month 1M windows with
    shared polling, countdown, reset, and a ten-minute stale horizon without
    exhausted backoff.
 

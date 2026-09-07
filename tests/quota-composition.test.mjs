@@ -855,7 +855,8 @@ test("resolves the newest supported user model and falls back without usable met
 test("distinguishes configured support, unconfigured known adapters, and unsupported session models", () => {
   const zai = provider({ id: "zai", title: "Z.AI", order: 110, configured: false })
   const openai = provider({ id: "openai", title: "OpenAI", order: 120 })
-  const providers = [zai, openai]
+  const openCodeGo = provider({ id: "opencode-go", title: "OpenCode GO", order: 130, configured: false, windows: [] })
+  const providers = [zai, openai, openCodeGo]
 
   assert.deepEqual(selectedQuotaProviderID([{ id: "zai-coding-plan" }, { id: "openai" }], providers), {
     kind: "supported",
@@ -864,6 +865,13 @@ test("distinguishes configured support, unconfigured known adapters, and unsuppo
   assert.deepEqual(selectedSessionQuotaProviderID([
     { id: "z1", role: "user", model: { providerID: "zai-coding-plan" } },
   ], providers, { kind: "supported", providerID: "openai" }), { kind: "none" })
+  assert.deepEqual(selectedSessionQuotaProviderID([
+    { id: "go1", role: "user", model: { providerID: "opencode-go-subscription" } },
+  ], providers, { kind: "supported", providerID: "openai" }), supported("opencode-go"))
+  assert.deepEqual(
+    headers(composeQuotaPanel(supported("openai"), providers).groups.find((group) => group.id === "other-providers")),
+    ["OpenCode GO"],
+  )
   assert.deepEqual(selectedSessionQuotaProviderID([
     { id: "a1", role: "user", model: { providerID: "anthropic" } },
   ], providers, { kind: "supported", providerID: "openai" }), {

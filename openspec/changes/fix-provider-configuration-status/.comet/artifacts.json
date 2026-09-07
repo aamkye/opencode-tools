@@ -1,0 +1,8 @@
+{
+  "openspec_proposal": "openspec/changes/fix-provider-configuration-status/proposal.md",
+  "openspec_design": "openspec/changes/fix-provider-configuration-status/design.md",
+  "openspec_tasks": "openspec/changes/fix-provider-configuration-status/tasks.md",
+  "openspec_delta_spec": "openspec/changes/fix-provider-configuration-status/specs/openai-quota-feedback/spec.md",
+  "handoff_context": "openspec/changes/fix-provider-configuration-status/.comet/handoff/design-context.json",
+  "handoff_markdown": "openspec/changes/fix-provider-configuration-status/.comet/handoff/design-context.md"
+}

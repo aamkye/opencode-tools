@@ -1,0 +1,15 @@
+{
+  "change": "fix-provider-configuration-status",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "13435ae2c5df245a5e4bf01968f4adb666b46ca6e7b0bb5acd830eb5253dab07",
+  "files": [
+    { "path": "openspec/changes/fix-provider-configuration-status/proposal.md", "sha256": "58edbc211d44ad14d754e2e3e4f8582388c6f271079b671dd783c5f9390dca35" },
+    { "path": "openspec/changes/fix-provider-configuration-status/design.md", "sha256": "59b7b597762fdc9591937c82fc9844bcef3b4070e166a805b0a228b3f4296e3c" },
+    { "path": "openspec/changes/fix-provider-configuration-status/tasks.md", "sha256": "3a92512078e4e18d4fce20ba247034253beba812c1b4b0ff287089363cab8447" },
+    { "path": "openspec/changes/fix-provider-configuration-status/specs/openai-quota-feedback/spec.md", "sha256": "ed5121766c1d1dc45c11e9f1721d802014c1b21a21ed80926aa66cb3ea2d28dc" },
+    { "path": "openspec/changes/fix-provider-configuration-status/specs/opencode-go-quota-provider/spec.md", "sha256": "93468c058a6031f86247a78b2740946b2702379262311f64488f7ad23becaf84" }
+  ]
+}

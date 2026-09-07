@@ -76,10 +76,8 @@ function openAiOptions(demand: QuotaProviderDemand): QuotaProviderOptions {
   return options
 }
 
-function openCodeGoOptions(demand: QuotaProviderDemand): OpenCodeGoProviderOptions | null {
-  const config = demand.openCodeGo?.config ?? null
-  if (!config) return null
-  const options: OpenCodeGoProviderOptions = { config }
+function openCodeGoOptions(demand: QuotaProviderDemand): OpenCodeGoProviderOptions {
+  const options: OpenCodeGoProviderOptions = { config: demand.openCodeGo?.config ?? null }
   const refreshIntervalMs = normalizeRefreshInterval(demand.openCodeGo?.refreshIntervalMs)
     ?? normalizeRefreshInterval(demand.refreshIntervalMs)
   if (refreshIntervalMs !== undefined) options.refreshIntervalMs = refreshIntervalMs
@@ -98,11 +96,10 @@ function openAiKey(demand: QuotaProviderDemand): string {
 }
 
 function openCodeGoKey(options: OpenCodeGoProviderOptions): string {
-  const config = options.config!
   return JSON.stringify([
     effectiveRefreshInterval(options.refreshIntervalMs),
-    config.workspaceId,
-    config.workspaceToken,
+    options.config?.workspaceId ?? null,
+    options.config?.workspaceToken ?? null,
   ])
 }
 
@@ -128,13 +125,11 @@ function providerSpecs(
         key: openAiKey(demand),
         create: () => factories.createOpenAiProvider(api, openai),
       },
-      ...(openCodeGo
-        ? [{
-            id: "opencode-go",
-            key: openCodeGoKey(openCodeGo),
-            create: () => factories.createOpenCodeGoProvider(api, openCodeGo),
-          } satisfies ProviderSpec]
-        : []),
+      {
+        id: "opencode-go",
+        key: openCodeGoKey(openCodeGo),
+        create: () => factories.createOpenCodeGoProvider(api, openCodeGo),
+      },
     ]
   }
 

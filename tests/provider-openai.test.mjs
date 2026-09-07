@@ -294,6 +294,7 @@ test("maps loading, missing authentication, and unavailable OpenAI states", () =
   assert.equal(item(mapOpenAiPanelState({ phase: "loading", now }), "openai:header").detail, "Loading OpenAI...")
   assert.equal(item(mapOpenAiPanelState({ phase: "unavailable", now, authenticated: false }), "openai:header").detail, "No ChatGPT account linked")
   assert.equal(item(mapOpenAiPanelState({ phase: "unavailable", now, authenticated: true }), "openai:header").detail, "Usage unavailable")
+  assert.equal(item(mapOpenAiPanelState({ phase: "authentication-required", now }), "openai:header").detail, "ChatGPT OAuth session required")
 })
 
 test("retains OpenAI quota with one warning stale header segment", () => {
@@ -490,6 +491,24 @@ test("exposes reactive freshness and omits the legacy home line while OpenAI dat
   assert.equal(adapter.home(), null)
 })
 
+test("clears OpenAI quota when the ChatGPT OAuth session is rejected", async (t) => {
+  let authenticated = true
+  const adapter = createTestAdapter(t, {
+    fetch: async () => authenticated ? quotaResponse() : { ok: false, status: 401 },
+  })
+
+  await adapter.refresh()
+  assert.equal(item(adapter.panel(), "openai:18000s-primary").value, 75)
+
+  authenticated = false
+  await adapter.refresh()
+
+  assert.equal(adapter.freshness(), "unavailable")
+  assert.equal(adapter.home(), null)
+  assert.equal(item(adapter.panel(), "openai:18000s-primary"), undefined)
+  assert.equal(item(adapter.panel(), "openai:header").detail, "ChatGPT OAuth session required")
+})
+
 test("expires stale OpenAI data after the stale window", async (t) => {
   const clock = installFakeClock(now)
   const adapter = createTestAdapter(t, {
@@ -586,6 +605,19 @@ test("uses the JWT account claim in OpenAI usage requests", async (t) => {
   assert.equal(request.url, "https://chatgpt.com/backend-api/wham/usage")
   assert.equal(request.options.headers.Authorization, `Bearer ${token}`)
   assert.equal(request.options.headers["ChatGPT-Account-Id"], "account-from-jwt")
+})
+
+test("classifies rejected OpenAI usage requests as authentication failures", async (t) => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: false, status: 401 })
+  t.after(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  assert.deepEqual(await fetchOpenAiQuota({ access: "token" }), { kind: "authentication-required" })
+
+  globalThis.fetch = async () => ({ ok: false, status: 403 })
+  assert.deepEqual(await fetchOpenAiQuota({ access: "token" }), { kind: "authentication-required" })
 })
 
 test("suppresses expected OpenAI abort logs but diagnoses non-abort failures", async (t) => {

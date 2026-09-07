@@ -207,6 +207,10 @@ test("documents standalone installation, migration, sidebar layouts, and rollbac
     "remove `./opencode-tools-ses-tokens.js`",
     "remove `./opencode-tools-subagent.js`",
     "restart OpenCode",
+    "OpenAI subscription quota uses the ChatGPT usage endpoint and requires a valid ChatGPT OAuth session",
+    "OpenAI API keys do not expose ChatGPT Plus or Pro quota",
+    "ChatGPT OAuth session required",
+    "OpenCode Go requires both `quota.opencodego.workspaceId` and `quota.opencodego.workspaceToken`; without them the panel stays visible with `Configuration required` and sends no console request",
   ]) assert.equal(prose.includes(text), true, `missing README text: ${text}`)
   assert.doesNotMatch(prose, /automatically disables? `?internal:sidebar-mcp`?/iu)
   assert.doesNotMatch(prose, /automatically disables? `?internal:sidebar-lsp`?/iu)

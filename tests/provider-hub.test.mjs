@@ -176,7 +176,7 @@ test("reconciles quota-first then home and disposes remaining adapters on hub sh
   assert.equal(created.every((provider) => provider.disposeCount === 1), true)
 })
 
-test("reuses home adapters when quota demand matches effective default options", () => {
+test("adds an unconfigured OpenCode Go adapter when quota demand matches effective default options", () => {
   const created = []
   const hub = createQuotaProviderHub({}, createProviderFactories(created))
 
@@ -190,13 +190,15 @@ test("reuses home adapters when quota demand matches effective default options",
     openCodeGo: null,
   })
 
-  assert.equal(created.length, 2)
-  assert.deepEqual(hub.providers(), homeProviders)
+  assert.equal(created.length, 3)
+  assert.deepEqual(hub.providers().map((provider) => provider.id), ["zai", "openai", "opencode-go"])
   assert.equal(created[0].disposeCount, 0)
   assert.equal(created[1].disposeCount, 0)
+  assert.deepEqual(created[2].options, { config: null, refreshIntervalMs: 10_000 })
 
   releaseQuota()
   assert.deepEqual(hub.providers(), homeProviders)
+  assert.equal(created[2].disposeCount, 1)
 
   releaseHome()
   assert.equal(created[0].disposeCount, 1)
@@ -255,7 +257,7 @@ test("rolls back a failed replacement while another consumer remains active", ()
     zai: { hideTools: false },
     openCodeGo: null,
   }))
-  assert.deepEqual(hub.providers().map((provider) => provider.id), ["zai", "openai"])
+  assert.deepEqual(hub.providers().map((provider) => provider.id), ["zai", "openai", "opencode-go"])
   assert.notDeepEqual(hub.providers(), homeProviders)
   assert.equal(homeZai.disposeCount, 1)
   assert.equal(homeOpenAi.disposeCount, 1)

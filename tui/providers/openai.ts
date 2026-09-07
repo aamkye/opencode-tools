@@ -62,7 +62,7 @@ export type OpenAiAuthEntry = {
   accountId?: string
 }
 
-export type OpenAiPanelPhase = "loading" | "unavailable" | "ready" | "stale"
+export type OpenAiPanelPhase = "loading" | "unavailable" | "authentication-required" | "ready" | "stale"
 
 export type OpenAiPanelState = {
   phase: OpenAiPanelPhase
@@ -149,6 +149,9 @@ export async function fetchOpenAiQuota(
     if (accountId) headers["ChatGPT-Account-Id"] = accountId
 
     const response = await fetch(OPENAI_USAGE_URL, { headers, signal: requestSignal })
+    if (response.status === 401 || response.status === 403) {
+      return { kind: "authentication-required" }
+    }
     if (!response.ok) {
       console.error(`[quota-openai] API returned ${response.status}`)
       return { kind: "transient-failure" }
@@ -244,6 +247,7 @@ export function mapOpenAiPanelState(state: OpenAiPanelState): PanelModel {
   const items: PanelItem[] = []
 
   if (state.phase === "loading") items.push(header("OpenAI", "Loading OpenAI..."))
+  else if (state.phase === "authentication-required") items.push(header("OpenAI", "ChatGPT OAuth session required"))
   else if (!data) items.push(header("OpenAI", state.authenticated ? "Usage unavailable" : "No ChatGPT account linked"))
   else {
     items.push(header(
@@ -271,7 +275,7 @@ export function mapOpenAiPanelState(state: OpenAiPanelState): PanelModel {
 }
 
 function freshnessFor(phase: OpenAiPanelPhase): ProviderFreshness {
-  return phase
+  return phase === "authentication-required" ? "unavailable" : phase
 }
 
 export function createOpenAiProvider(api: TuiPluginApi, options: QuotaProviderOptions = {}): QuotaProviderAdapter {
@@ -298,7 +302,11 @@ export function createOpenAiProvider(api: TuiPluginApi, options: QuotaProviderOp
       onCredentialMissing: () => "unavailable",
       onFetchSuccess: () => { setPhase("ready") },
       onFetchTransientFailure: () => "unavailable",
-      onFetchAuthRequired: () => "unavailable",
+      onFetchAuthRequired: (helpers) => {
+        setQuotaState(null)
+        helpers.clearScheduledRefresh()
+        return "authentication-required"
+      },
       onFetchInvalidResponse: () => "unavailable",
       onStaleHorizon: (h) => {
         setQuotaState(null)

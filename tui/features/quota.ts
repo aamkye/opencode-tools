@@ -303,11 +303,13 @@ export function composeQuotaPanel(
   requestedOptions?: QuotaCompositionOptions,
 ): PanelModel {
   const options = compositionOptions(requestedOptions)
-  const configuredProviders = providers.filter((provider) => provider.configured())
+  const displayableProviders = providers.filter((provider) =>
+    provider.configured() || provider.id === "opencode-go",
+  )
   const selected = selection.kind === "supported"
-    ? configuredProviders.find((provider) => provider.id === selection.providerID)
+    ? displayableProviders.find((provider) => provider.id === selection.providerID)
     : undefined
-  const secondary = configuredProviders
+  const secondary = displayableProviders
     .filter((provider) => provider !== selected && !effectiveHideInactive(provider, requestedOptions))
     .sort((left, right) => {
       const leftMetric = metric(providerPrimaryPct(left) ?? 0, options)
@@ -390,7 +392,9 @@ function resolveSupportedProvider(
   providers: readonly QuotaProviderAdapter[],
 ): QuotaProviderAdapter | undefined {
   const adapterID = ADAPTER_ID_BY_PROVIDER_ID[providerID] ?? providerID
-  return providers.find((provider) => provider.id === adapterID && provider.configured())
+  return providers.find((provider) =>
+    provider.id === adapterID && (provider.configured() || provider.id === "opencode-go"),
+  )
 }
 
 export function selectedQuotaProviderID(
