@@ -1,6 +1,6 @@
 import assert from "assert/strict"
 import { build } from "esbuild"
-import test from "node:test"
+import test, { after } from "node:test"
 import { writeFileSync, mkdtempSync, mkdirSync, copyFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -8,6 +8,14 @@ import { join } from "node:path"
 const tmpDir = mkdtempSync(join(tmpdir(), "quota-stats-test-"))
 mkdirSync(join(tmpDir, "data"), { recursive: true })
 copyFileSync("lib/tokens/data/modelsdev-pricing.min.json", join(tmpDir, "data", "modelsdev-pricing.min.json"))
+const originalEnvironment = {
+  HOME: process.env.HOME,
+  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+  XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+}
+process.env.HOME = tmpDir
+process.env.XDG_CONFIG_HOME = join(tmpDir, "config")
+process.env.XDG_DATA_HOME = join(tmpDir, "opencode-data")
 const bundlePath = join(tmpDir, "quota-stats.mjs")
 const bundle = await build({
   entryPoints: ["lib/tokens/quota-stats.ts"],
@@ -18,43 +26,35 @@ const bundle = await build({
   external: ["bun:sqlite", "better-sqlite3"],
 })
 writeFileSync(bundlePath, bundle.outputFiles[0].text)
-const { aggregateUsage } = await import(`file://${bundlePath}`)
+const { aggregateUsage, resolvePricingKey } = await import(`file://${bundlePath}`)
 
-const now = Date.now()
-
-function message(model, tokens) {
-  return {
-    id: `msg-${model}-${Math.random().toString(36).slice(2)}`,
-    role: "assistant",
-    modelID: model,
-    time: { created: now, updated: now },
-    tokens: tokens ?? { input: 1000, output: 500 },
+after(() => {
+  for (const [key, value] of Object.entries(originalEnvironment)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
   }
-}
+})
 
-test("aggregateUsage returns structured result with byModel, unknown, and totals", async () => {
-  const rows = [
-    message("gpt-4o", { input: 1000, output: 500 }),
-    message("gpt-4o-mini", { input: 2000, output: 100 }),
-    message("unknown-model-xyz", { input: 500, output: 100 }),
-  ]
-  const result = await aggregateUsage(rows, {})
+test("aggregateUsage returns an empty structured result without OpenCode storage", async () => {
+  const result = await aggregateUsage({})
   assert.ok(Array.isArray(result.byModel), "byModel should be an array")
   assert.ok(Array.isArray(result.unknown), "unknown should be an array")
   assert.ok(typeof result.totals === "object", "totals should be an object")
-  assert.ok(result.byModel.length > 0, "should have at least 1 model row")
+  assert.equal(result.totals.messageCount, 0)
+  assert.deepEqual(result.byModel, [])
 })
 
 test("aggregateUsage handles empty message list", async () => {
-  const result = await aggregateUsage([], {})
+  const result = await aggregateUsage({})
   assert.ok(typeof result.totals === "object", "totals should be an object")
   assert.ok(Array.isArray(result.byModel), "byModel should be an array")
 })
 
-test("aggregateUsage collects unrecognized models", async () => {
-  const rows = [message("completely-unknown-model", { input: 500, output: 100 })]
-  const result = await aggregateUsage(rows, {})
-  // The model may end up in byModel (if provider is inferred), unknown, or unpriced
-  const totalEntries = result.byModel.length + (result.unknown?.length ?? 0) + (result.unpriced?.length ?? 0)
-  assert.ok(totalEntries >= 1, "should have at least 1 entry across all collections")
+test("resolvePricingKey distinguishes known and unknown model IDs", () => {
+  assert.deepEqual(resolvePricingKey({ modelID: "gpt-4o" }), {
+    ok: true,
+    key: { provider: "openai", model: "gpt-4o" },
+    method: "unique_model",
+  })
+  assert.equal(resolvePricingKey({ modelID: "completely-unknown-model" }).ok, false)
 })
