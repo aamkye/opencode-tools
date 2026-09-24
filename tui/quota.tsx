@@ -1,131 +1,61 @@
-import { createMemo, createSignal, Show } from "solid-js"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-
-import { PanelRenderer, type PanelTheme } from "./presentation/renderer.js"
-import type {
-  QuotaProviderAdapter,
-} from "../shared/opencode-tools-shared.js"
+import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js"
+import { PanelRenderer } from "./presentation/renderer.js"
 import {
-  acquireQuotaProviderHub,
-  createQuotaSelection,
-  defineTuiPlugin,
-  pluginDescriptor,
-  quotaAdapterShared,
-  resolveChipOption,
-  resolveCollapseDefault,
-  StatusChip,
-  type PanelStatus,
-  type QuotaProviderDemand,
-  type QuotaProviderHub,
-  type ServiceLease,
-  type TuiFeatureContext,
+  acquireQuotaProviderHub, createQuotaSelection, defineTuiPlugin, panelTheme, pluginDescriptor,
+  quotaAdapterShared, resolveChipOption, resolveCollapseDefault, StatusChip,
+  type PanelStatus, type QuotaProviderDemand,
 } from "../shared/opencode-tools-shared.js"
-
-type QuotaSelectionController = ReturnType<typeof createQuotaSelection>
-
-export const quotaProviderHubTestKey = Symbol("quota-provider-hub-test")
-
-function acquireHub(
-  context: TuiFeatureContext,
-  api: TuiPluginApi,
-  demand: QuotaProviderDemand,
-  meta: unknown,
-): ServiceLease<QuotaProviderHub> {
-  const injected = meta && typeof meta === "object"
-    ? (meta as Record<PropertyKey, unknown>)[quotaProviderHubTestKey]
-    : undefined
-  const acquire = typeof injected === "function"
-    ? injected as typeof acquireQuotaProviderHub
-    : acquireQuotaProviderHub
-  return acquire({ ...context, api }, demand)
-}
 
 function quotaHubDemand(options: ReturnType<typeof quotaAdapterShared.normalizeOptions>): QuotaProviderDemand {
   const demand = quotaAdapterShared.quotaProviderDemand(options)
-  return {
-    consumer: "quota",
-    refreshIntervalMs: options.refreshIntervalMs,
-    zai: { hideTools: demand.zai.hideTools },
-    openCodeGo: demand.openCodeGo,
+  return { consumer: "quota", refreshIntervalMs: options.refreshIntervalMs, zai: { hideTools: demand.zai.hideTools }, openCodeGo: demand.openCodeGo }
+}
+
+const plugin = defineTuiPlugin(pluginDescriptor("quota"), (scope, api) => {
+  const options = quotaAdapterShared.normalizeOptions(api.options)
+  const collapseDefaults = resolveCollapseDefault(api.options, true)
+  const chipEnabled = resolveChipOption(api.options, true).enabled
+  const hub = acquireQuotaProviderHub({ ...scope, api }, quotaHubDemand(options))
+  const [providers, setProviders] = createSignal(hub.value.providers())
+  scope.onCleanup(hub.value.subscribe(() => setProviders(hub.value.providers())))
+  const theme = () => panelTheme(api)
+
+  function viewModel(sessionID: () => string) {
+    const selection = createQuotaSelection(api, providers)
+    onCleanup(selection.dispose)
+    createEffect(() => { selection.setSessionID(sessionID()) })
+    return createMemo(() => quotaAdapterShared.composePanel(selection.selectedProviderID(), providers(), options))
   }
-}
 
-function reactiveProviders(providers: () => readonly QuotaProviderAdapter[]): readonly QuotaProviderAdapter[] {
-  type Predicate = (provider: QuotaProviderAdapter, index: number, values: readonly QuotaProviderAdapter[]) => unknown
-  // Quota helpers only use these methods; each read tracks the current hub signal.
-  return {
-    filter(predicate: Predicate, thisArg?: unknown) {
-      return providers().filter(predicate, thisArg)
-    },
-    find(predicate: Predicate, thisArg?: unknown) {
-      return providers().find(predicate, thisArg)
-    },
-    some(predicate: Predicate, thisArg?: unknown) {
-      return providers().some(predicate, thisArg)
-    },
-  } as unknown as readonly QuotaProviderAdapter[]
-}
+  function QuotaPanel(props: { sessionID: string }) {
+    const model = viewModel(() => props.sessionID)
+    createEffect(() => {
+      for (const provider of providers()) provider.setSessionID(props.sessionID)
+    })
+    return <PanelRenderer
+      model={model} theme={theme}
+      initiallyCollapsed={collapseDefaults.collapsed}
+      initiallyCollapsedGroupIds={collapseDefaults.secondaryCollapsed ? ["other-providers"] : []}
+      resetKey={() => props.sessionID}
+    />
+  }
 
-const plugin = defineTuiPlugin(pluginDescriptor("quota"), (context, api, rawOptions, meta) => {
-  const options = quotaAdapterShared.normalizeOptions(rawOptions)
-  const collapseDefaults = resolveCollapseDefault(rawOptions, true)
-  const chipEnabled = resolveChipOption(rawOptions, true).enabled
-  const hub = acquireHub(context, api, quotaHubDemand(options), meta)
-  const [currentProviders, setCurrentProviders] = createSignal(hub.value.providers())
-  const [activeSessionID, setActiveSessionID] = createSignal("")
-  let currentSessionID = ""
-  context.onCleanup(hub.value.subscribe(() => {
-    const providers = hub.value.providers()
-    for (const provider of providers) provider.setSessionID(currentSessionID)
-    setCurrentProviders(providers)
-  }))
-  const providers = reactiveProviders(currentProviders)
-  const selection: QuotaSelectionController = quotaAdapterShared.createSelection(api, providers)
-  const model = createMemo(() => quotaAdapterShared.composePanel(selection.selectedProviderID(), providers, options))
-  const theme = () => api.theme.current as PanelTheme
-
-  function QuotaChip(props: { theme: () => PanelTheme }) {
+  function QuotaChip(props: { sessionID?: string }) {
+    const model = viewModel(() => props.sessionID ?? "")
     const summary = createMemo(() => {
-      const s = model()?.collapsedSummary
-      return s && s.kind === "text" ? s : undefined
+      const value = model().collapsedSummary
+      return value?.kind === "text" ? value : undefined
     })
     const segments = createMemo<readonly { text: string; status?: PanelStatus }[]>(() => {
-      const s = summary()
-      if (!s) return []
-      if (s.segments && s.segments.length > 0) return s.segments
-      return [{ text: s.text, ...(s.status ? { status: s.status } : {}) }]
+      const value = summary()
+      return value ? value.segments?.length ? value.segments : [{ text: value.text, status: value.status }] : []
     })
-    return (
-      <Show when={summary() && segments().length > 0}>
-        <StatusChip label="Q" segments={segments()} theme={props.theme} />
-      </Show>
-    )
+    return <Show when={summary() && segments().length > 0}><StatusChip label="Q" segments={segments()} theme={theme} /></Show>
   }
 
-  api.slots.register({
-    // The aggregate owns the sole sidebar slot at the legacy Z.AI registration order.
-    order: quotaAdapterShared.sidebarSlotOrder,
-    slots: {
-      sidebar_content(_ctx, props) {
-        const sessionID = props.session_id ?? ""
-        currentSessionID = sessionID
-        setActiveSessionID(sessionID)
-        selection.setSessionID(sessionID)
-        for (const provider of currentProviders()) provider.setSessionID(sessionID)
-        return <PanelRenderer
-          model={model}
-          theme={theme}
-          initiallyCollapsed={collapseDefaults.collapsed}
-          initiallyCollapsedGroupIds={collapseDefaults.secondaryCollapsed ? ["other-providers"] : []}
-          resetKey={activeSessionID}
-        />
-      },
-      session_prompt_right() {
-        return chipEnabled ? <QuotaChip theme={theme} /> : null
-      },
-    },
-  })
+  scope.onCleanup(api.ui.slot({ append: "sidebar.content", render: (props) => <QuotaPanel sessionID={props.sessionID} /> }))
+  if (chipEnabled) scope.onCleanup(api.ui.slot({ append: "prompt.footer.status", render: (props) => <QuotaChip sessionID={props.sessionID} /> }))
 })
 
-export { createQuotaSelection } from "../shared/opencode-tools-shared.js"
+export { createQuotaSelection }
 export default plugin

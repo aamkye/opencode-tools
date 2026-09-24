@@ -1,94 +1,21 @@
-import { existsSync, readFileSync } from "node:fs"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import type { Message, Part, Provider, TextPart } from "@opencode-ai/sdk/v2"
+import type { Plugin } from "@opencode/plugin/tui"
+import type { SessionMessageInfo } from "@opencode/client"
 import { createEffect, createRoot, createSignal } from "solid-js"
 
 import type { PanelItem, PanelModel, PanelStatus, PanelTextSegment } from "../presentation/types.js"
 import type { HomeQuotaSummary, ProviderFreshness, QuotaProviderAdapter, QuotaProviderOptions } from "./types.js"
-import { EXHAUSTED_POLL_MS, FETCH_TIMEOUT_MS, clampPct, safeNumber } from "./_shared.js"
+import { EXHAUSTED_POLL_MS } from "./_shared.js"
 import { createQuotaPollingEngine } from "./quota-engine.js"
-import type { QuotaEngineFetchResult } from "./quota-engine.js"
+import type { AbsoluteQuota, ZaiQuotaData } from "../../lib/quota/zai.js"
+import { createQuotaTransport } from "../services/quota-client.js"
 
-const CREDENTIAL_FILE_PATHS = [
-  `${process.env.XDG_DATA_HOME || `${process.env.HOME || ""}/.local/share`}/opencode/auth.json`,
-  `${process.env.XDG_CONFIG_HOME || `${process.env.HOME || ""}/.config`}/opencode/auth.json`,
-  `${process.env.XDG_CONFIG_HOME || `${process.env.HOME || ""}/.config`}/opencode/account.json`,
-  `${process.env.XDG_DATA_HOME || `${process.env.HOME || ""}/.local/share`}/opencode/account.json`,
-]
-const ZAI_QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit"
-const ZAI_PROVIDER_ID = "zai-coding-plan"
+export type { ZaiQuotaData } from "../../lib/quota/zai.js"
 const PROVIDER_ORDER = 110
-const KV_BASELINE_KEY = "quota_zai_baseline_sgt"
-const KV_CYCLE_MS_KEY = "quota_zai_cycle_ms"
 const FALLBACK_BASELINE_SGT = "2026-05-28 00:45:44"
 const FALLBACK_CYCLE_MS = 5 * 60 * 60 * 1_000
 const RESET_PARSE_RE = /Your limit will reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/
 const RETRY_AFTER_RE = /reset after (\d+h)?(\d+m)?(\d+s)?/i
 const SGT_OFFSET_MS = 8 * 60 * 60 * 1_000
-const TIME_UNIT = { SESSION_5H: 3, WEEKLY_7D: 6 } as const
-
-type TokenLimit = {
-  type: "TOKENS_LIMIT"
-  unit: number
-  percentage: number
-  nextResetTime: number
-  usage?: number
-  currentValue?: number
-}
-
-type UsageDetail = {
-  modelCode: string
-  usage: number
-}
-
-type TimeLimit = {
-  type: "TIME_LIMIT"
-  unit: number
-  usage: number
-  currentValue: number
-  percentage: number
-  nextResetTime: number
-  usageDetails: UsageDetail[]
-}
-
-type QuotaApiResponse = {
-  code: number
-  msg?: string
-  data?: {
-    limits?: (TokenLimit | TimeLimit)[]
-    level?: string
-  }
-}
-
-type AbsoluteQuota = {
-  usedPct: number
-  remainingPct: number
-  nextResetEpoch: number
-  used: number
-  total: number
-}
-
-export type ZaiQuotaData = {
-  level: string
-  tokenUsedPct: number
-  tokenRemainingPct: number
-  tokenNextResetEpoch: number
-  tokenAbsolute: AbsoluteQuota | null
-  weeklyLimit: {
-    usedPct: number
-    remainingPct: number
-    nextResetEpoch: number
-    absolute: AbsoluteQuota | null
-  } | null
-  timeLimit: {
-    usedPct: number
-    remainingPct: number
-    nextResetEpoch: number
-    total: number
-    used: number
-    usageDetails: UsageDetail[]
-  } | null
-}
 
 export type ZaiPanelPhase = "loading" | "unavailable" | "ready" | "stale" | "heuristic" | "rate-limited"
 
@@ -100,17 +27,6 @@ export type ZaiPanelState = {
   baselineSgt?: string
   cycleMs?: number
   hideTools?: boolean
-}
-
-type AccountEntry = {
-  serviceID: string
-  credential?: { key: string }
-}
-
-type AccountFile = {
-  version: number
-  active?: Record<string, string>
-  accounts?: Record<string, AccountEntry>
 }
 
 function parseSgt(date: string): number | null {
@@ -140,112 +56,6 @@ function timerState(remainingPct: number, epoch: number, now: number): "unavaila
   return epoch > now ? "countdown" : "expired"
 }
 
-function keyFromAuthFile(data: unknown): string | null {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return null
-  const entry = (data as Record<string, { type?: string; key?: string }>)[ZAI_PROVIDER_ID]
-  if (!entry || (entry.type && entry.type !== "api")) return null
-  return typeof entry.key === "string" && entry.key ? entry.key : null
-}
-
-function keyFromAccountFile(data: unknown): string | null {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return null
-  const file = data as AccountFile
-  if (file.version !== 2 || !file.accounts) return null
-  const activeID = file.active?.[ZAI_PROVIDER_ID]
-  if (activeID && file.accounts[activeID]?.credential?.key) return file.accounts[activeID].credential.key
-  return Object.values(file.accounts).find((entry) => entry.serviceID === ZAI_PROVIDER_ID)?.credential?.key ?? null
-}
-
-function keyFromAccountArray(data: unknown): string | null {
-  if (!Array.isArray(data)) return null
-  return data.find((entry): entry is AccountEntry => typeof entry === "object" && entry !== null && (entry as AccountEntry).serviceID === ZAI_PROVIDER_ID)?.credential?.key ?? null
-}
-
-export function findZaiKeyFromFiles(): string | null {
-  for (const path of CREDENTIAL_FILE_PATHS) {
-    try {
-      if (!existsSync(path)) continue
-      const data = JSON.parse(readFileSync(path, "utf8"))
-      const key = keyFromAuthFile(data) ?? keyFromAccountFile(data) ?? keyFromAccountArray(data)
-      if (key) return key
-    } catch (error) {
-      console.error("[quota-zai] Failed to read credential file:", error)
-    }
-  }
-  return null
-}
-
-export function findZaiKeyFromProviders(providers: readonly Provider[]): string | null {
-  return providers.find((provider) => provider.id === ZAI_PROVIDER_ID)?.key ?? null
-}
-
-export async function fetchZaiQuota(apiKey: string, signal?: AbortSignal): Promise<ZaiQuotaData | null> {
-  const ownedController = signal ? null : new AbortController()
-  const requestSignal = signal ?? ownedController!.signal
-  const timeout = ownedController
-    ? setTimeout(() => ownedController.abort(), FETCH_TIMEOUT_MS)
-    : null
-  try {
-    const response = await fetch(ZAI_QUOTA_URL, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-      signal: requestSignal,
-    })
-    if (!response.ok) return null
-    const payload = await response.json() as QuotaApiResponse
-    if (payload.code !== 200 || !payload.data?.limits) return null
-
-    const rawLevel = String(payload.data.level || "Unknown")
-    const tokenLimits = payload.data.limits.filter((limit): limit is TokenLimit => limit.type === "TOKENS_LIMIT")
-    const token = tokenLimits.find((limit) => limit.unit === TIME_UNIT.SESSION_5H) ?? tokenLimits[0]
-    const weekly = tokenLimits.find((limit) => limit.unit === TIME_UNIT.WEEKLY_7D && limit !== token)
-    const time = payload.data.limits.find((limit): limit is TimeLimit => limit.type === "TIME_LIMIT")
-    const absolute = (limit: TokenLimit, usedPct: number): AbsoluteQuota | null => {
-      const total = safeNumber(limit.usage, 0)
-      if (total <= 0) return null
-      return {
-        usedPct,
-        remainingPct: clampPct(100 - usedPct),
-        nextResetEpoch: safeNumber(limit.nextResetTime, 0),
-        used: safeNumber(limit.currentValue, Math.round(total * usedPct / 100)),
-        total,
-      }
-    }
-    const tokenUsedPct = token ? clampPct(safeNumber(token.percentage, 0)) : 0
-
-    return {
-      level: rawLevel.charAt(0).toUpperCase() + rawLevel.slice(1).toLowerCase(),
-      tokenUsedPct,
-      tokenRemainingPct: clampPct(100 - tokenUsedPct),
-      tokenNextResetEpoch: token ? safeNumber(token.nextResetTime, 0) : 0,
-      tokenAbsolute: token ? absolute(token, tokenUsedPct) : null,
-      weeklyLimit: weekly
-        ? {
-            usedPct: clampPct(safeNumber(weekly.percentage, 0)),
-            remainingPct: clampPct(100 - safeNumber(weekly.percentage, 0)),
-            nextResetEpoch: safeNumber(weekly.nextResetTime, 0),
-            absolute: absolute(weekly, clampPct(safeNumber(weekly.percentage, 0))),
-          }
-        : null,
-      timeLimit: time
-        ? {
-            usedPct: clampPct(safeNumber(time.percentage, 0)),
-            remainingPct: clampPct(100 - safeNumber(time.percentage, 0)),
-            nextResetEpoch: safeNumber(time.nextResetTime, 0),
-            total: safeNumber(time.usage, 0),
-            used: safeNumber(time.currentValue, 0),
-            usageDetails: Array.isArray(time.usageDetails) ? time.usageDetails : [],
-          }
-        : null,
-    }
-  } catch (error) {
-    if (!requestSignal.aborted) console.error("[quota-zai] fetchQuota error:", error)
-    return null
-  } finally {
-    if (timeout) clearTimeout(timeout)
-  }
-}
-
 export function zaiHomeQuotaSummary(data: ZaiQuotaData): HomeQuotaSummary {
   return {
     provider: "Z.AI",
@@ -253,14 +63,6 @@ export function zaiHomeQuotaSummary(data: ZaiQuotaData): HomeQuotaSummary {
     primaryPct: data.tokenRemainingPct,
     secondaryPct: data.weeklyLimit?.remainingPct,
   }
-}
-
-async function fetchZaiViaEngine(
-  apiKey: string,
-  signal: AbortSignal,
-): Promise<QuotaEngineFetchResult<ZaiQuotaData>> {
-  const data = await fetchZaiQuota(apiKey, signal)
-  return data ? { kind: "success", data } : { kind: "transient-failure" }
 }
 
 function header(
@@ -369,14 +171,14 @@ export function mapZaiPanelState(state: ZaiPanelState): PanelModel {
   }
 }
 
-function scanMessageParts(messages: readonly Message[], partReader: (messageID: string) => readonly Part[], regex: RegExp): string | null {
+function scanMessageParts(messages: readonly SessionMessageInfo[], regex: RegExp): string | null {
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const message = messages[messageIndex]
-    if (!message) continue
-    const parts = partReader(message.id)
+    if (message?.type !== "assistant") continue
+    const parts = message.content
     for (let partIndex = parts.length - 1; partIndex >= 0; partIndex -= 1) {
       const part = parts[partIndex]
-      if (part?.type === "text" && (part as TextPart).text.match(regex)) return (part as TextPart).text.match(regex)![0]
+      if (part?.type === "text" && part.text.match(regex)) return part.text.match(regex)![0]
     }
   }
   return null
@@ -387,7 +189,7 @@ function freshnessFor(phase: ZaiPanelPhase): ProviderFreshness {
   return phase
 }
 
-export function createZaiProvider(api: TuiPluginApi, options: QuotaProviderOptions = {}): QuotaProviderAdapter {
+export function createZaiProvider(api: Plugin.Context, options: QuotaProviderOptions = {}): QuotaProviderAdapter {
   return createRoot((dispose) => {
     type PublishedQuota = { data: ZaiQuotaData; generation: number }
 
@@ -402,20 +204,29 @@ export function createZaiProvider(api: TuiPluginApi, options: QuotaProviderOptio
     const [now, setNow] = createSignal(Date.now())
 
     let providerDisposed = false
+    const transport = createQuotaTransport(api, { provider: "zai" })
 
     const engine = createQuotaPollingEngine<ZaiQuotaData, string, ZaiPanelPhase>({
       providerId: "zai",
       refreshIntervalMs: options.refreshIntervalMs,
       exhaustedPollMs: EXHAUSTED_POLL_MS,
-      resolveCredential: () => findZaiKeyFromProviders(api.state.provider) ?? findZaiKeyFromFiles(),
-      credentialFingerprint: (key) => key,
-      fetch: fetchZaiViaEngine,
+      resolveCredential: transport.identity,
+      fetch: async (identity, signal) => {
+        const response = await transport.fetch(identity, signal)
+        return response.provider === "zai" ? response.result : { kind: "invalid-response" }
+      },
       quotaState,
       lastSuccessAt,
       initialPhase: "loading",
       isExhausted: (data) => data.tokenRemainingPct === 0,
       onCredentialMissing: () => "unavailable",
       onCredentialChanged: () => { setRetryAfterEpoch(null) },
+      onFetchAuthRequired: (h) => {
+        setQuotaState(null)
+        setRetryAfterEpoch(null)
+        h.clearScheduledRefresh()
+        return "unavailable"
+      },
       onFetchSuccess: () => { setPhase("ready") },
       onFetchTransientFailure: () =>
         retryAfterEpoch() && retryAfterEpoch()! > Date.now() ? "rate-limited" : "heuristic",
@@ -431,44 +242,34 @@ export function createZaiProvider(api: TuiPluginApi, options: QuotaProviderOptio
       setNow,
     })
 
+    const [settings, updateSettings] = api.storage.store("quota-zai", {
+      initial: { baselineSgt: FALLBACK_BASELINE_SGT, cycleMs: FALLBACK_CYCLE_MS },
+    })
     createEffect(() => {
-      try {
-        const storedBaseline = api.kv.get<string>(KV_BASELINE_KEY)
-        if (storedBaseline) setBaselineSgt(storedBaseline)
-        const storedCycle = api.kv.get<number>(KV_CYCLE_MS_KEY)
-        if (storedCycle) setCycleMs(Number(storedCycle) || FALLBACK_CYCLE_MS)
-      } catch {
-        // The host KV store can initialize after the adapter.
-      }
+      if (typeof settings.baselineSgt === "string" && parseSgt(settings.baselineSgt) !== null) setBaselineSgt(settings.baselineSgt)
+      if (Number.isFinite(settings.cycleMs) && settings.cycleMs > 0) setCycleMs(settings.cycleMs)
     })
 
     createEffect(() => {
       const id = sessionID()
       if (!id) return
-      let messages: readonly Message[] = []
+      let messages: readonly SessionMessageInfo[] = []
       try {
-        messages = api.state.session.messages(id)
+        messages = api.data.session.message.list(id)
       } catch {
         return
       }
-      const readParts = (messageID: string): readonly Part[] => {
-        try {
-          return api.state.part(messageID)
-        } catch {
-          return []
-        }
-      }
-      const resetMessage = scanMessageParts(messages, readParts, RESET_PARSE_RE)
+      const resetMessage = scanMessageParts(messages, RESET_PARSE_RE)
       const reset = resetMessage?.match(RESET_PARSE_RE)?.[1]
       if (reset && reset !== baselineSgt()) {
         setBaselineSgt(reset)
         try {
-          api.kv.set(KV_BASELINE_KEY, reset)
+          void updateSettings((draft) => { draft.baselineSgt = reset }).catch(() => {})
         } catch {
           // The reset fallback remains in memory if persistence is unavailable.
         }
       }
-      const retryMessage = scanMessageParts(messages, readParts, RETRY_AFTER_RE)
+      const retryMessage = scanMessageParts(messages, RETRY_AFTER_RE)
       const match = retryMessage?.match(RETRY_AFTER_RE)
       const seconds = (match?.[1] ? Number.parseInt(match[1]) * 3_600 : 0) + (match?.[2] ? Number.parseInt(match[2]) * 60 : 0) + (match?.[3] ? Number.parseInt(match[3]) : 0)
       setRetryAfterEpoch(seconds > 0 ? Date.now() + seconds * 1_000 : null)
@@ -495,7 +296,7 @@ export function createZaiProvider(api: TuiPluginApi, options: QuotaProviderOptio
       panel: () => mapZaiPanelState({ phase: phase(), data: quotaData(), retryAfterEpoch: retryAfterEpoch(), baselineSgt: baselineSgt(), cycleMs: cycleMs(), hideTools: options.hideTools, now: now() }),
       home: () => phase() === "ready" && quotaData() ? zaiHomeQuotaSummary(quotaData()!) : null,
       quotaSummary: () => quotaData() ? zaiHomeQuotaSummary(quotaData()!) : null,
-      configured: () => Boolean(engine.credential()),
+      configured: transport.configured,
       freshness: () => freshnessFor(phase()),
       refresh: engine.refresh,
       setSessionID(id: string): void {

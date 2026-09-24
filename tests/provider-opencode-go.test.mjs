@@ -7,13 +7,24 @@ const fixture = (name) => readFileSync(`tests/fixtures/opencode-go/${name}`, "ut
 const manifest = JSON.parse(fixture("request-manifest.json"))
 const now = Date.UTC(2026, 6, 14, 12, 0, 0)
 const {
-  createOpenCodeGoProvider,
-  fetchOpenCodeGoQuota,
+  createOpenCodeGoProvider: createNativeOpenCodeGoProvider,
   mapOpenCodeGoPanelState,
-  normalizeOpenCodeGoConfig,
   openCodeGoHomeQuotaSummary,
-  parseOpenCodeGoHydration,
 } = providerModule
+const { fetchOpenCodeGoQuota, normalizeOpenCodeGoConfig, parseOpenCodeGoHydration } = await import("../.tmp-test/quota-rpc.mjs")
+
+// The adapter sees only the native RPC client; HTTP belongs to the server-side transport.
+function createOpenCodeGoProvider(_api, { fetch: http = async () => new Response(null, { status: 503 }), ...options }) {
+  const api = {
+    location: { directory: "/remote" },
+    data: { on: () => () => {} },
+    client: { rpc: () => ({ fetch: async (input, { signal }) => ({
+      provider: "opencode-go", configured: Boolean(input.config),
+      result: await fetchOpenCodeGoQuota(input.config, signal, { fetch: http, now: Date.now }),
+    }) }) },
+  }
+  return createNativeOpenCodeGoProvider(api, options)
+}
 const sentinel = {
   workspaceId: "wrk_TESTWORKSPACE",
   workspaceToken: "TOKEN_TEST_ONLY_DO_NOT_USE",

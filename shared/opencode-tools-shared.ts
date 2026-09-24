@@ -80,16 +80,11 @@ export {
 } from "../tui/services/quota-provider-hub.js";
 export {
   createOpenCodeGoProvider,
-  fetchOpenCodeGoQuota,
   mapOpenCodeGoPanelState,
-  normalizeOpenCodeGoConfig,
   openCodeGoHomeQuotaSummary,
-  parseOpenCodeGoHydration,
 } from "../tui/providers/opencode-go.js";
 export type {
   OpenCodeGoConfig,
-  OpenCodeGoFetchDependencies,
-  OpenCodeGoFetchResult,
   OpenCodeGoOptions,
   OpenCodeGoPanelPhase,
   OpenCodeGoPanelState,

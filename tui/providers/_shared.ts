@@ -4,14 +4,7 @@ export const TICK_MS = 1_000
 export const FETCH_TIMEOUT_MS = 20_000
 export const STALE_MAX_MS = 10 * 60 * 1_000
 
-export function clampPct(value: number): number {
-  return Math.min(100, Math.max(0, value))
-}
-
-export function safeNumber(value: unknown, fallback = 0): number {
-  const number = Number(value)
-  return Number.isFinite(number) ? number : fallback
-}
+export { clampPct, safeNumber } from "../../lib/quota/types.js"
 
 export function unref(timer: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>): void {
   ;(timer as { unref?: () => void }).unref?.()

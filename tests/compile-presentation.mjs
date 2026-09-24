@@ -42,6 +42,7 @@ for (const name of ["presentation-types", "presentation-format", "presentation-l
 mkdirSync(".tmp-test", { recursive: true })
 
 for (const [entryPoint, outfile, conditions, plugins, external] of [
+  ["tests/quota-rpc.fixture.ts", ".tmp-test/quota-rpc.mjs"],
   ["tui/presentation/types.ts", ".tmp-test/presentation-types.mjs"],
   ["tui/presentation/format.ts", ".tmp-test/presentation-format.mjs"],
   ["tui/presentation/layout.ts", ".tmp-test/presentation-layout.mjs"],
@@ -70,7 +71,7 @@ for (const [entryPoint, outfile, conditions, plugins, external] of [
   ["tui/features/quota.ts", ".tmp-test/quota-composition.mjs", ["browser"]],
   ["tests/quota-selection.fixture.ts", ".tmp-test/quota-selection.mjs", ["browser"]],
   ["tui/features/home.ts", ".tmp-test/home-feature.mjs", ["browser"]],
-  ["tui/home.tsx", ".tmp-test/home-composition.mjs", ["browser"]],
+  ["tests/quota-mounted.fixture.ts", ".tmp-test/home-composition.mjs", ["browser"], [openTuiSolidPlugin], ["@opentui/core"]],
   ["tui/features/context.ts", ".tmp-test/context-model.mjs", ["browser"]],
   ["tui/features/mcp.ts", ".tmp-test/mcp-model.mjs", ["browser"]],
   ["tui/features/ses-tokens.ts", ".tmp-test/ses-tokens-model.mjs", ["browser"]],
