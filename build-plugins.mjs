@@ -8,7 +8,6 @@ import { transformAsync } from "@babel/core"
 import { pluginManifest, retiredPluginPaths, validatePluginManifest } from "./plugin-manifest.mjs"
 
 const projectRoot = dirname(fileURLToPath(import.meta.url))
-const distRoot = resolve(projectRoot, "dist")
 
 const hostDependencies = [
   "solid-js",
@@ -82,7 +81,11 @@ function hostRuntimeImports() {
   }
 }
 
-export async function buildPlugins({ logLevel = "info", manifest = pluginManifest } = {}) {
+export async function buildPlugins({
+  logLevel = "info",
+  manifest = pluginManifest,
+  distRoot = resolve(projectRoot, "dist"),
+} = {}) {
   validatePluginManifest(manifest)
   await mkdir(distRoot, { recursive: true })
   await rm(resolve(distRoot, "plugins/opencode-tools-tokens.js"), { force: true })

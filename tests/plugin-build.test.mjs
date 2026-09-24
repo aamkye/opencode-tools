@@ -3,9 +3,9 @@ import { existsSync } from "node:fs"
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { builtinModules, registerHooks } from "node:module"
 import { tmpdir } from "node:os"
-import { resolve } from "node:path"
+import { basename, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
-import test, { before } from "node:test"
+import test, { after, before } from "node:test"
 
 import { pluginManifest } from "../plugin-manifest.mjs"
 
@@ -144,15 +144,17 @@ function nodeModulePackageRoots(result) {
 }
 
 let buildPlugins
+let buildRoot
 let buildResults
 let contents
 
 before(async () => {
   ;({ buildPlugins } = await import(pathToFileURL(resolve(root, "build-plugins.mjs"))))
-  await mkdir(resolve(root, "dist/plugins"), { recursive: true })
-  await writeFile(resolve(root, "dist/plugins/opencode-tools-tokens.js"), "stale artifact")
+  buildRoot = await mkdtemp(resolve(tmpdir(), "opencode-tools-build-"))
+  await mkdir(resolve(buildRoot, "dist/plugins"), { recursive: true })
+  await writeFile(resolve(buildRoot, "dist/plugins/opencode-tools-tokens.js"), "stale artifact")
   for (const path of retiredPaths) {
-    const target = resolve(root, "dist", path)
+    const target = resolve(buildRoot, "dist", path)
     if (path.endsWith("opencode-tools-token-report")) {
       await mkdir(target, { recursive: true })
       await writeFile(resolve(target, "package.json"), "{}\n")
@@ -161,11 +163,15 @@ before(async () => {
       await writeFile(target, "stale report artifact\n")
     }
   }
-  buildResults = await buildPlugins({ logLevel: "silent" })
+  buildResults = await buildPlugins({ logLevel: "silent", distRoot: resolve(buildRoot, "dist") })
   contents = Object.fromEntries(await Promise.all(expectedArtifacts.map(async (file) => [
     file,
-    existsSync(resolve(root, file)) ? await readFile(resolve(root, file), "utf8") : "",
+    existsSync(resolve(buildRoot, file)) ? await readFile(resolve(buildRoot, file), "utf8") : "",
   ])))
+})
+
+after(async () => {
+  if (buildRoot) await rm(buildRoot, { recursive: true, force: true })
 })
 
 test("build:plugins emits the manifest artifact layout and return shape", async () => {
@@ -183,11 +189,11 @@ test("build:plugins emits the manifest artifact layout and return shape", async 
     assert.doesNotMatch(output, /\n\s{2,}(?:const|let|function|return|if)\b/, `${file} is not minified`)
     assert.doesNotMatch(output, /sourceMappingURL/, `${file} contains a source map reference`)
   }
-  assert.equal(existsSync(resolve(root, "dist/plugins/opencode-tools-tokens.js")), false)
+  assert.equal(existsSync(resolve(buildRoot, "dist/plugins/opencode-tools-tokens.js")), false)
 })
 
 test("build removes retired managed report outputs", () => {
-  for (const path of retiredPaths) assert.equal(existsSync(resolve(root, "dist", path)), false, path)
+  for (const path of retiredPaths) assert.equal(existsSync(resolve(buildRoot, "dist", path)), false, path)
 })
 
 test("compiled MCP keeps collapse state reactive", () => {
@@ -291,12 +297,12 @@ test("only the SubAgent feature bundles its approved dependency chain", () => {
 
 test("standalone defaults expose only their manifest ID and TUI activation", async () => {
   const nonce = Date.now()
-  const shared = await import(`${pathToFileURL(resolve(root, sharedArtifact)).href}?shared=${nonce}`)
+  const shared = await import(`${pathToFileURL(resolve(buildRoot, sharedArtifact)).href}?shared=${nonce}`)
   assert.equal("default" in shared, false)
   assert.equal(typeof shared.createZaiProvider, "function")
 
   for (const entry of pluginManifest) {
-    const module = await import(`${pathToFileURL(resolve(root, `dist/${entry.outfile}`)).href}?shape=${nonce}`)
+    const module = await import(`${pathToFileURL(resolve(buildRoot, `dist/${entry.outfile}`)).href}?shape=${nonce}`)
     assert.deepEqual(Object.keys(module.default).sort(), ["id", "tui"])
     assert.equal(module.default.id, entry.id)
     assert.equal(typeof module.default.tui, "function")
@@ -329,8 +335,8 @@ test("each artifact loads alone, activates only its feature, and cleans up", asy
       const featureRoot = resolve(isolatedRoot, entry.key)
       await mkdir(featureRoot)
       await Promise.all([
-        copyFile(resolve(root, sharedArtifact), resolve(featureRoot, "opencode-tools-shared.js")),
-        copyFile(resolve(root, `dist/${entry.outfile}`), resolve(featureRoot, entry.outfile)),
+        copyFile(resolve(buildRoot, sharedArtifact), resolve(featureRoot, "opencode-tools-shared.js")),
+        copyFile(resolve(buildRoot, `dist/${entry.outfile}`), resolve(featureRoot, entry.outfile)),
       ])
 
       const module = await import(`${pathToFileURL(resolve(featureRoot, entry.outfile)).href}?activation=${Date.now()}`)
@@ -363,13 +369,44 @@ for (const field of ["id", "outfile"]) {
       outfile: `task15-invalid-${field}-${entry.key}.js`,
     }))
     invalid[1][field] = invalid[0][field]
-    const candidateOutputs = [...new Set(invalid.map((entry) => resolve(root, "dist", entry.outfile)))]
+    const candidateOutputs = [...new Set(invalid.map((entry) => resolve(buildRoot, "dist", entry.outfile)))]
     await Promise.all(candidateOutputs.map((path) => rm(path, { force: true })))
 
     await assert.rejects(
-      buildPlugins({ logLevel: "silent", manifest: invalid }),
+      buildPlugins({ logLevel: "silent", manifest: invalid, distRoot: resolve(buildRoot, "dist") }),
       new RegExp(`duplicate ${field}:`),
     )
     assert.equal(candidateOutputs.every((path) => !existsSync(path)), true)
   })
 }
+
+test("build fixtures and output are isolated from concurrent deployment", async (t) => {
+  const { deployPlugins } = await import("../deploy-plugins.mjs")
+  const targetRoot = await mkdtemp(resolve(tmpdir(), "opencode-tools-build-deploy-"))
+  t.after(() => rm(targetRoot, { recursive: true, force: true }))
+  const packageRoot = resolve(buildRoot, "dist/plugins/opencode-tools-token-report")
+
+  await mkdir(packageRoot, { recursive: true })
+  for (const file of expectedArtifacts) {
+    await writeFile(resolve(buildRoot, file), `// private build: ${file}\n`)
+  }
+  // Force the reported mkdir -> another build's cleanup -> writeFile interleaving.
+  await deployPlugins(targetRoot, { logLevel: "silent" })
+  await writeFile(resolve(packageRoot, "package.json"), "{}\n")
+  for (const file of expectedArtifacts) {
+    assert.equal(await readFile(resolve(buildRoot, file), "utf8"), `// private build: ${file}\n`, file)
+  }
+
+  const results = await Promise.allSettled([
+    buildPlugins({ logLevel: "silent", distRoot: resolve(buildRoot, "dist") }),
+    deployPlugins(targetRoot, { logLevel: "silent" }),
+  ])
+  for (const result of results) {
+    if (result.status === "rejected") throw result.reason
+  }
+  for (const path of retiredPaths) assert.equal(existsSync(resolve(buildRoot, "dist", path)), false, path)
+  for (const file of expectedArtifacts) {
+    assert.equal(await readFile(resolve(buildRoot, file), "utf8"), contents[file], `private ${file}`)
+    assert.equal(await readFile(resolve(targetRoot, basename(file)), "utf8"), contents[file], `deployed ${file}`)
+  }
+})
