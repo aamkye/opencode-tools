@@ -10,7 +10,7 @@
 OpenCode TUI plugins that show quota usage, reset countdowns, rate-limit
 status, compact homepage summaries, MCP server health, active-session context
 and spend, LSP status, synchronized session TODOs, complete session-tree token
-totals, direct-child SubAgent activity, and `/tokens_*` reports for **Z.AI
+totals, and direct-child SubAgent activity for **Z.AI
 (GLM)**, **OpenAI (ChatGPT Plus/Pro)**, and **OpenCode Go**.
 
 ![opencode-tools homepage bottom](img/img0.jpg)
@@ -169,10 +169,6 @@ Fully restart OpenCode after deployment.
 
 - **Homepage summary** — each provider plugin also registers a compact homepage
   line, such as `Z.AI: Max; 93%/84%` or `OpenAI: Pro Lite; 96%/84%`.
-- **`/tokens_*` commands** — server plugin providing token usage and cost
-  reports: `/tokens_today`, `/tokens_daily`, `/tokens_weekly`, `/tokens_monthly`,
-  `/tokens_all`, `/tokens_session`, `/tokens_session_all`, `/tokens_between`.
-  Reads from `opencode.db` with full models.dev pricing resolution.
 - **Color-coded bars** — green above 30% remaining, amber at ≤30%,
   red at ≤10% remaining.
 - **Provider names, plan types, and bar labels** use the theme foreground
@@ -199,7 +195,6 @@ Native TUI options can be supplied with the local plugin entry:
   "$schema": "https://opencode.ai/tui.json",
   "plugin": [
     "./opencode-tools-home.js",
-    "./opencode-tools-token-report.js",
     "./opencode-tools-context.js",
     "./opencode-tools-ses-tokens.js",
     "./opencode-tools-subagent.js",
@@ -245,7 +240,7 @@ Context ships as a separate opt-in artifact. Enable it by adding
 The entries must remain standalone and in manifest order. Quota accepts the
 quota options object; each sidebar panel (Context, SesTokens, SubAgent, MCP,
 LSP, TODO) optionally accepts an options object with `defaultState` and `chip`.
-Home and token-report use string entries.
+Home uses a string entry.
 
 #### Default collapse state
 
@@ -347,9 +342,8 @@ SubAgent) also render a compact status chip through `session_prompt_right`, on
 the right of the in-session prompt's agent/model row. Each chip reuses its
 panel's collapsed summary and semantic status colors — e.g.
 `Q 46%`, `Ctx 64%`, `MCP 4/0/0`, `LSP 2`, `TODO 4/3/2`, `Tok 29.11M`,
-`Sub 7/1/3`. A plugin renders no chip when its panel has no data. Home and
-token-report do not render chips. Chips are display-only and do not affect the
-sidebar panels.
+`Sub 7/1/3`. A plugin renders no chip when its panel has no data. Home does not
+render chips. Chips are display-only and do not affect the sidebar panels.
 
 | Option  | Type   | Default     | Accepted values           | Applicable plugins                                             |
 | ------- | ------ | ----------- | ------------------------- | ------------------------------------------------------------- |
@@ -761,7 +755,7 @@ emits no panel output.
 
 ### Build and deploy
 
-Build the nine standalone minified ESM plugins and their imported shared
+Build the standalone minified ESM plugins and their imported shared
 artifact:
 
 ```bash
@@ -778,7 +772,7 @@ npm run deploy:global
 ```
 
 Each deploy command rebuilds first and automatically migrates managed
-configuration entries to the nine standalone entries in manifest order. It
+configuration entries to the standalone entries in manifest order. It
 preserves unrelated plugin entries and preserves existing per-plugin options
 (quota and `defaultState`); quota options remain attached only to the quota
 entry. Local deployment also
@@ -823,7 +817,6 @@ and its configuration before restarting.
 dist/
 ├── opencode-tools-shared.js
 ├── opencode-tools-home.js
-├── opencode-tools-token-report.js
 ├── opencode-tools-context.js
 ├── opencode-tools-ses-tokens.js
 ├── opencode-tools-subagent.js
@@ -836,9 +829,8 @@ dist/
 
 | File                             | Runtime ID                           | Responsibility                                                      |
 | -------------------------------- | ------------------------------------ | ------------------------------------------------------------------- |
-| `opencode-tools-shared.js`       | Not registered                       | Imported-only provider, presentation, and token-report logic.       |
+| `opencode-tools-shared.js`       | Not registered                       | Imported-only provider, presentation, and session accounting logic. |
 | `opencode-tools-home.js`         | `aamkye/opencode-tools-home`         | Compact homepage provider summary.                                  |
-| `opencode-tools-token-report.js` | `aamkye/opencode-tools-token-report` | TUI `/tokens_*` commands and reports.                               |
 | `opencode-tools-context.js`      | `aamkye/opencode-tools-context`      | Reactive active-session context and spend panel.                    |
 | `opencode-tools-ses-tokens.js`   | `aamkye/opencode-tools-ses-tokens`   | Complete descendant-session-tree assistant token aggregation panel. |
 | `opencode-tools-subagent.js`     | `aamkye/opencode-tools-subagent`     | Direct-child SubAgent activity panel.                               |
@@ -872,7 +864,6 @@ after deployment.
 | --------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `tui/quota.tsx`                         | Standalone quota sidebar adapter                                                              |
 | `tui/home.tsx`                          | Standalone compact homepage adapter                                                           |
-| `tui/token-report.tsx`                  | Standalone TUI token-report command adapter                                                   |
 | `tui/mcp.tsx`                           | Standalone reactive MCP sidebar adapter                                                       |
 | `tui/context.tsx`                       | Standalone reactive active-session context and spend sidebar adapter                          |
 | `tui/lsp.tsx`                           | Standalone reactive LSP sidebar adapter                                                       |
@@ -886,13 +877,12 @@ after deployment.
 | `tui/services/subagent-snapshot.ts`     | Bounded direct-child snapshot loader                                                          |
 | `tui/services/subagent-source.ts`       | Event refresh, retry, stale-state, and failure persistence source                             |
 | `tui/providers/`                        | Z.AI, OpenAI, and OpenCode Go provider adapters                                               |
-| `lib/tokens/`                           | Vendored token reporting library ([upstream](https://github.com/slkiser/opencode-quota), MIT) |
 | `lib/session-rename.ts`                 | Manual session rename command behavior                                                        |
 | `session-rename.ts`                     | Global manual session rename plugin entry point                                               |
 | `plugin-manifest.json`                  | Manifest order, runtime IDs, artifacts, slots, and option ownership                           |
 | `build-session-rename.mjs`              | Builds the bundled global session rename plugin                                               |
-| `build-plugins.mjs`                     | Builds the shared artifact and nine standalone local ESM plugins                              |
-| `deploy-plugins.mjs`                    | Idempotently migrates nine local/global plugins and `tui.json` entries                        |
+| `build-plugins.mjs`                     | Builds the shared artifact and standalone local ESM plugins                                   |
+| `deploy-plugins.mjs`                    | Idempotently migrates local/global plugins and `tui.json` entries                             |
 
 ### Edit workflow
 
@@ -901,7 +891,7 @@ Edit the relevant source, redeploy, then fully restart OpenCode to reload.
 ```bash
 npm install       # install/refresh deps in node_modules
 npm run typecheck # tsc --noEmit (informational; runtime resolves via Bun)
-npm run build:plugins # rebuild all nine standalone plugins plus shared code
+npm run build:plugins # rebuild all standalone plugins plus shared code
 npm run deploy:local # rebuild and deploy into this repository
 npm test          # run tests
 ```
@@ -909,7 +899,7 @@ npm test          # run tests
 ## Breaking migration
 
 This project was renamed to `opencode-tools`. Replace every prior project path,
-TUI entry, package name, token plugin filename, and build command with the paths
+TUI entry, package name, and build command with the paths
 shown above. Legacy files and aliases are intentionally not provided.
 
 ## How it works
@@ -943,11 +933,3 @@ shown above. Legacy files and aliases are intentionally not provided.
 3. Renders the rolling 5H, weekly 7D, and subscription month 1M windows with
    shared polling, countdown, reset, and a ten-minute stale horizon without
    exhausted backoff.
-
-### `/tokens_*` reports
-
-1. Reads assistant messages from `opencode.db` (SQLite, via `bun:sqlite`).
-2. Aggregates token usage by model, provider, and session.
-3. Resolves USD costs using a bundled models.dev pricing snapshot.
-4. Formats a markdown report with summary, model breakdown, and top sessions.
-5. Injects the report into the session via `noReply` prompt (no model invocation).

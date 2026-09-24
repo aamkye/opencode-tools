@@ -6,7 +6,6 @@
   "type": "module",
   "exports": {
     "./home": "./tui/home.tsx",
-    "./token-report": "./tui/token-report.tsx",
     "./context": "./tui/context.tsx",
     "./ses-tokens": "./tui/ses-tokens.tsx",
     "./subagent": "./tui/subagent.tsx",

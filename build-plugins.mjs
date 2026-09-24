@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { build } from "esbuild"
 import { transformAsync } from "@babel/core"
 
-import { pluginManifest, validatePluginManifest } from "./plugin-manifest.mjs"
+import { pluginManifest, retiredPluginPaths, validatePluginManifest } from "./plugin-manifest.mjs"
 
 const projectRoot = dirname(fileURLToPath(import.meta.url))
 const distRoot = resolve(projectRoot, "dist")
@@ -19,7 +19,6 @@ const hostDependencies = [
   "@opencode-ai/sdk",
   "@opencode-ai/sdk/*",
   "bun:*",
-  "better-sqlite3",
   ...builtinModules,
   ...builtinModules.filter((name) => !name.startsWith("node:")).map((name) => `node:${name}`),
 ]
@@ -87,6 +86,7 @@ export async function buildPlugins({ logLevel = "info", manifest = pluginManifes
   validatePluginManifest(manifest)
   await mkdir(distRoot, { recursive: true })
   await rm(resolve(distRoot, "plugins/opencode-tools-tokens.js"), { force: true })
+  await Promise.all(retiredPluginPaths.map((path) => rm(resolve(distRoot, path), { recursive: true, force: true })))
 
   const shared = await build({
     ...common,

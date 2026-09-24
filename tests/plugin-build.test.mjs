@@ -18,6 +18,12 @@ const hostRuntimeUrls = {
   "@opentui/solid/jsx-runtime": import.meta.resolve("@opentui/solid/jsx-runtime"),
 }
 const sharedArtifact = "dist/opencode-tools-shared.js"
+const retiredPaths = [
+  "opencode-tools-token-report.js",
+  "tui/token-report.tsx",
+  "opencode-tools-token-report",
+  "plugins/opencode-tools-token-report",
+]
 const expectedArtifacts = [
   sharedArtifact,
   ...pluginManifest.map((entry) => `dist/${entry.outfile}`),
@@ -145,6 +151,16 @@ before(async () => {
   ;({ buildPlugins } = await import(pathToFileURL(resolve(root, "build-plugins.mjs"))))
   await mkdir(resolve(root, "dist/plugins"), { recursive: true })
   await writeFile(resolve(root, "dist/plugins/opencode-tools-tokens.js"), "stale artifact")
+  for (const path of retiredPaths) {
+    const target = resolve(root, "dist", path)
+    if (path.endsWith("opencode-tools-token-report")) {
+      await mkdir(target, { recursive: true })
+      await writeFile(resolve(target, "package.json"), "{}\n")
+    } else {
+      await mkdir(resolve(target, ".."), { recursive: true })
+      await writeFile(target, "stale report artifact\n")
+    }
+  }
   buildResults = await buildPlugins({ logLevel: "silent" })
   contents = Object.fromEntries(await Promise.all(expectedArtifacts.map(async (file) => [
     file,
@@ -155,9 +171,9 @@ before(async () => {
 test("build:plugins emits the manifest artifact layout and return shape", async () => {
   const pkg = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"))
   assert.equal(pkg.scripts["build:plugins"], "node build-plugins.mjs")
-  assert.equal(expectedArtifacts.length, 10)
+  assert.equal(expectedArtifacts.length, 7)
   assert.deepEqual(Object.keys(buildResults).sort(), ["features", "shared"])
-  assert.equal(Object.keys(buildResults.features).length, 9)
+  assert.equal(Object.keys(buildResults.features).length, 6)
   assert.deepEqual(Object.keys(buildResults.features), pluginManifest.map((entry) => entry.key))
 
   for (const file of expectedArtifacts) {
@@ -168,6 +184,10 @@ test("build:plugins emits the manifest artifact layout and return shape", async 
     assert.doesNotMatch(output, /sourceMappingURL/, `${file} contains a source map reference`)
   }
   assert.equal(existsSync(resolve(root, "dist/plugins/opencode-tools-tokens.js")), false)
+})
+
+test("build removes retired managed report outputs", () => {
+  for (const path of retiredPaths) assert.equal(existsSync(resolve(root, "dist", path)), false, path)
 })
 
 test("compiled MCP keeps collapse state reactive", () => {
@@ -202,7 +222,6 @@ test("feature metafiles contain their own source and no sibling feature", () => 
   assert.ok(sharedInputs.some((file) => file.endsWith("tui/providers/zai.ts")))
   assert.ok(sharedInputs.some((file) => file.endsWith("tui/providers/openai.ts")))
   assert.ok(sharedInputs.some((file) => file.endsWith("tui/providers/opencode-go.ts")))
-  assert.ok(sharedInputs.some((file) => file.endsWith("lib/tokens/token-report-data.ts")))
   assert.ok(sharedInputs.some((file) => file.endsWith("tui/features/ses-tokens.ts")))
   assert.ok(sharedInputs.some((file) => file.endsWith("tui/services/session-tree-snapshot.ts")))
   assert.ok(sharedInputs.some((file) => file.endsWith("tui/services/ses-tokens-source.ts")))
@@ -245,7 +264,6 @@ test("all host and built-in dependencies remain external", () => {
           || dependency.path.startsWith("@opencode-ai/")
           || dependency.path.startsWith("bun:")
           || builtins.has(bare)
-          || dependency.path === "better-sqlite3"
         if (host) assert.equal(dependency.external, true, `${dependency.path} was bundled`)
       }
     }
@@ -276,7 +294,6 @@ test("standalone defaults expose only their manifest ID and TUI activation", asy
   const shared = await import(`${pathToFileURL(resolve(root, sharedArtifact)).href}?shared=${nonce}`)
   assert.equal("default" in shared, false)
   assert.equal(typeof shared.createZaiProvider, "function")
-  assert.equal(typeof shared.computeTokenReport, "function")
 
   for (const entry of pluginManifest) {
     const module = await import(`${pathToFileURL(resolve(root, `dist/${entry.outfile}`)).href}?shape=${nonce}`)
@@ -290,7 +307,6 @@ test("each artifact loads alone, activates only its feature, and cleans up", asy
   const expectedRegistration = {
     quota: { slots: ["sidebar_content", "session_prompt_right"], keymaps: 0 },
     home: { slots: ["home_bottom"], keymaps: 0 },
-    "token-report": { slots: [], keymaps: 2 },
     mcp: { slots: ["sidebar_content", "session_prompt_right"], keymaps: 0 },
     context: { slots: ["sidebar_content", "session_prompt_right"], keymaps: 0 },
     lsp: { slots: ["sidebar_content", "session_prompt_right"], keymaps: 0 },

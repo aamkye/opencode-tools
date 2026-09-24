@@ -12,14 +12,11 @@ test("publishes and typechecks the standalone plugins", () => {
 
   assert.deepEqual(pkg.exports, {
     "./home": "./tui/home.tsx",
-    "./token-report": "./tui/token-report.tsx",
     "./context": "./tui/context.tsx",
     "./ses-tokens": "./tui/ses-tokens.tsx",
     "./subagent": "./tui/subagent.tsx",
     "./quota": "./tui/quota.tsx",
     "./mcp": "./tui/mcp.tsx",
-    "./lsp": "./tui/lsp.tsx",
-    "./todo": "./tui/todo.tsx",
   })
   assert.deepEqual(pkg.files, ["dist", "plugin-manifest.json", "tui", "shared", "README.md"])
   assert.deepEqual(tsconfig.include, [
@@ -114,7 +111,7 @@ test("documents standalone installation, migration, sidebar layouts, and rollbac
   assert.ok(subagentContract, "missing AGENTS.md SubAgent contract")
   assert.ok(configurationSection, "missing Configuration section")
   assert.ok(configurationText, "missing documented tui.json configuration")
-  assert.match(introduction.replace(/\s+/gu, " "), /MCP server health, active-session context and spend, LSP status, synchronized session TODOs, complete session-tree token totals, direct-child SubAgent activity/u)
+  assert.match(introduction.replace(/\s+/gu, " "), /MCP server health, active-session context and spend, LSP status, synchronized session TODOs, complete session-tree token totals, and direct-child SubAgent activity/u)
 
   const normalizedContextContract = contextContract.replace(/\s+/gu, " ")
   for (const text of [
@@ -136,7 +133,6 @@ test("documents standalone installation, migration, sidebar layouts, and rollbac
   assert.equal(Array.isArray(configuration.plugin), true, "documented tui.json must contain a plugin array")
   assert.deepEqual(configuration.plugin.map((entry) => Array.isArray(entry) ? entry[0] : entry), [
     "./opencode-tools-home.js",
-    "./opencode-tools-token-report.js",
     "./opencode-tools-context.js",
     "./opencode-tools-ses-tokens.js",
     "./opencode-tools-subagent.js",
@@ -176,7 +172,6 @@ test("documents standalone installation, migration, sidebar layouts, and rollbac
   for (const id of [
     "aamkye/opencode-tools-quota",
     "aamkye/opencode-tools-home",
-    "aamkye/opencode-tools-token-report",
     "aamkye/opencode-tools-mcp",
     "aamkye/opencode-tools-context",
     "aamkye/opencode-tools-lsp",
@@ -469,8 +464,8 @@ test("documents standalone installation, migration, sidebar layouts, and rollbac
   assert.ok(sessionRenameSection, "missing Session rename plugin section")
   assert.ok(sourceFiles, "missing Source files section")
   assert.ok(editWorkflow, "missing Edit workflow section")
-  assert.match(buildAndDeploy, /Build the nine standalone minified ESM plugins/u)
-  assert.match(buildAndDeploy, /configuration entries to the nine standalone entries in manifest order/u)
+  assert.match(buildAndDeploy, /Build the standalone minified ESM plugins/u)
+  assert.match(buildAndDeploy, /configuration entries to the standalone entries in manifest order/u)
   assert.match(
     rollback.replace(/\s+/gu, " "),
     /To remove the Context panel, remove `\.\/opencode-tools-context\.js` from the `plugin` array and restart OpenCode\./u,
@@ -520,9 +515,9 @@ test("documents standalone installation, migration, sidebar layouts, and rollbac
   assert.match(sourceFiles, /^\| `tui\/features\/subagent\.ts`\s+\| SubAgent status, duration, grouping, and panel model\s+\|$/mu)
   assert.match(sourceFiles, /^\| `tui\/services\/subagent-snapshot\.ts`\s+\| Bounded direct-child snapshot loader\s+\|$/mu)
   assert.match(sourceFiles, /^\| `tui\/services\/subagent-source\.ts`\s+\| Event refresh, retry, stale-state, and failure persistence source\s+\|$/mu)
-  assert.match(sourceFiles, /Builds the shared artifact and nine standalone local ESM plugins/u)
-  assert.match(sourceFiles, /Idempotently migrates nine local\/global plugins and `tui\.json` entries/u)
-  assert.match(editWorkflow, /npm run build:plugins # rebuild all nine standalone plugins plus shared code/u)
+  assert.match(sourceFiles, /Builds the shared artifact and standalone local ESM plugins/u)
+  assert.match(sourceFiles, /Idempotently migrates local\/global plugins and `tui\.json` entries/u)
+  assert.match(editWorkflow, /npm run build:plugins # rebuild all standalone plugins plus shared code/u)
 
   assert.match(sesTokensFeatures, /K\/M\/B suffixes/u)
   assert.match(sesTokensFeatures, /up to two decimal places/u)

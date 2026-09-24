@@ -5,7 +5,6 @@ import { pluginManifest, validatePluginManifest } from "../plugin-manifest.mjs"
 
 const expected = [
   ["home", "aamkye/opencode-tools-home", "tui/home.tsx", "opencode-tools-home.js", "none"],
-  ["token-report", "aamkye/opencode-tools-token-report", "tui/token-report.tsx", "opencode-tools-token-report.js", "none"],
   ["context", "aamkye/opencode-tools-context", "tui/context.tsx", "opencode-tools-context.js", "defaultState"],
   ["ses-tokens", "aamkye/opencode-tools-ses-tokens", "tui/ses-tokens.tsx", "opencode-tools-ses-tokens.js", "defaultState"],
   ["subagent", "aamkye/opencode-tools-subagent", "tui/subagent.tsx", "opencode-tools-subagent.js", "defaultState"],
@@ -13,7 +12,7 @@ const expected = [
   ["mcp", "aamkye/opencode-tools-mcp", "tui/mcp.tsx", "opencode-tools-mcp.js", "defaultState"],
 ]
 
-test("manifest describes the seven retained standalone plugins in deployment order", () => {
+test("manifest describes the six retained standalone plugins in deployment order", () => {
   assert.deepEqual(pluginManifest.map((entry) => [entry.key, entry.id, entry.source, entry.outfile, entry.options]), expected)
   assert.doesNotThrow(() => validatePluginManifest(pluginManifest))
 })
@@ -22,7 +21,6 @@ test("package exports every standalone plugin", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
   assert.deepEqual(pkg.exports, {
     "./home": "./tui/home.tsx",
-    "./token-report": "./tui/token-report.tsx",
     "./context": "./tui/context.tsx",
     "./ses-tokens": "./tui/ses-tokens.tsx",
     "./subagent": "./tui/subagent.tsx",

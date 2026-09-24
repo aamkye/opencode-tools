@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Migrate the active codebase to OpenCode 2.0.16 on `feat/opencode-v2`, preserving the seven retained UI features and manual session renaming.
+**Goal:** Migrate the active codebase to OpenCode 2.0.16 on `feat/opencode-v2`, preserving the six retained UI features and manual session renaming.
 
 **Architecture:** Use native V2 plugin definitions and the connected client's published types. Keep feature models and presentation helpers, introduce one paginated session source, and move authenticated quota requests into a server RPC companion. Deploy paired server/TUI packages through native server configuration.
 
@@ -11,7 +11,8 @@
 ## Global Constraints
 
 - The minimum supported host is OpenCode 2.0.16.
-- Retain Home, Context, SesTokens, SubAgent, Quota, MCP, Token Reports, and the server-side `/session-rename` command.
+- Retain Home, Context, SesTokens, SubAgent, Quota, MCP, and the server-side `/session-rename` command.
+- Remove Token Reports, its commands, and report-only code per the user's subsequent request: "get rid of token reports".
 - Retire the LSP panel and chip because V2 does not run LSP servers.
 - Retire the TODO panel and chip because V2 2.0.16 has no equivalent session TODO feed. Do not introduce plugin-owned task tools or storage.
 - Use the published V2 plugin and client types directly rather than maintaining a V1-shaped host compatibility layer.
@@ -23,6 +24,8 @@
 - Completion requires successful typechecking, the full test suite, production builds, and a V2 plugin-load smoke test using isolated configuration.
 
 **Approved spec:** `docs/superpowers/specs/2026-09-24-opencode-v2-migration-design.md`, committed as `b6aaefa`.
+
+**Scope amendment:** After the initial Task 6 implementation, the user requested removal of Token Reports. The revised Task 6 below supersedes its original migration work. Tasks 1–5 remain completed; Tasks 8–9 use six retained UI packages and treat Token Reports as retired.
 
 ## Contract facts and execution order
 
@@ -38,10 +41,10 @@ Plugin.define({ id: "example", setup(context) { return () => {} } })
 // Client methods unwrap single-resource responses; lists keep data/cursor.
 // Messages are on client.message, not client.session.message.list.
 declare const client: OpenCodeClient
-const session: SessionInfo = await client.session.create({ title: "Token Reports" })
+const session: SessionInfo = await client.session.get({ sessionID: "ses_example" })
 const page = await client.message.list({ sessionID: session.id, order: "asc" })
 const messages: SessionMessageInfo[] = page.data
-await client.session.synthetic({ sessionID: session.id, text: "Report", resume: false })
+await client.session.synthetic({ sessionID: session.id, text: "Invalid session title", resume: false })
 ```
 
 Native assistant messages use `type: "assistant"`, `model: { providerID, id, variant? }`, `content`, `tokens`, and `time`. Session events use `event.data`. Native theme values are RGBA tokens under `context.theme.text`, including `text.feedback.success.base`, `warning.base`, and `error.base`.
@@ -59,7 +62,7 @@ Execute tasks in order. During the API cutover, individual task tests are the ga
 | `lib/quota/{types,openai,zai,opencode-go,credentials}.ts` (new) | Reused provider HTTP/parsing code and server-only connection resolution |
 | `shared/quota-rpc.ts`, `quota-service.ts` (new) | Validated quota RPC contract and native server registration |
 | `tui/services/quota-client.ts` (new), `quota-provider-hub.ts`, `tui/providers/*` | Location-scoped RPC transport, shared polling and presentation |
-| `lib/tokens/usage-source.ts` (new), `quota-stats.ts`, `token-report-data.ts` | Client-backed accounting input, existing pricing/grouping and report orchestration |
+| `tui/token-report.tsx`, `tui/features/token-report.ts`, report-only `lib/tokens/` files | Removed with Token Reports; preserve shared session pagination used by live panels |
 | `lib/session-rename.ts`, `session-rename.ts` | Native command execution and title ownership |
 | `plugin-manifest.json`, `plugin-manifest.mjs`, build/deploy scripts | Ordered native packages, managed configuration migration and artifact cleanup |
 | Existing test files, new session-source/quota-RPC tests and V2 smoke script | Behavioral regression and real-host loading evidence |
@@ -178,7 +181,7 @@ node --test tests/plugin-runtime.test.mjs tests/plugin-manifest.test.mjs
 git diff --check
 ```
 
-Expected: native lifetime and seven retained manifest entries pass. Stage only this task's files; commit `refactor(runtime): adopt native v2 plugin lifetime`.
+Expected at this completed task's original scope: native lifetime and seven retained manifest entries pass. Task 6's subsequent removal reduces the final manifest to six. Stage only this task's files; commit `refactor(runtime): adopt native v2 plugin lifetime`.
 
 ### Task 2: Implement a complete, cancellable connected-session source
 
@@ -447,101 +450,37 @@ git diff --check
 
 Expected: current provider parsing/layout behavior, shared consumer lifetime, remote location propagation and no resolved credential in RPC output. Commit `feat(quota): fetch provider usage through v2 rpc`.
 
-### Task 6: Move all token reports to connected-server usage
+### Task 6: Remove Token Reports (user scope amendment)
 
-**Files:** Create `lib/tokens/usage-source.ts`. Remove `lib/tokens/opencode-storage.ts`, `opencode-sqlite.ts`, `opencode-runtime-paths.ts` after checking remaining imports. Modify `lib/tokens/quota-stats.ts`, `token-buckets.ts`, `token-report-data.ts`, `token-report-presenter.ts`, `tui/features/token-report.ts`, `tui/token-report.tsx`, `shared/opencode-tools-shared.ts`; replace `tests/opencode-storage.test.mjs` with `tests/usage-source.test.mjs`; update quota-stats/token-command/token-TUI tests and their fixtures/compiler entries.
+The user's later instruction, "get rid of token reports", supersedes the original Task 6 implementation. Remove the feature through a forward commit; keep the migration branch and retained panels.
 
-**Interfaces:**
+**Files:** Remove `tui/token-report.tsx`, `tui/features/token-report.ts`, and report-only files under `lib/tokens/`, including report commands, parsing, usage aggregation, pricing and assets, after verifying consumers. Remove report-only tests/fixtures and compiler entries. Update `shared/opencode-tools-shared.ts`, `plugin-manifest.json`, `tui/runtime/manifest.ts`, `package.json`, build/deploy cleanup, aggregate tests, and current README report instructions.
 
-```ts
-import type { SessionInfo, SessionMessageAssistant } from "@opencode/client"
-import type { SessionSource } from "../session-source.js"
+**Interfaces:** The final manifest contains exactly `home`, `context`, `ses-tokens`, `subagent`, `quota`, `mcp`, in that order. No report API remains. Preserve `lib/session-source.ts` and retained native panel/quota interfaces. Build/deploy recognizes retired report paths and old `tokens_*` definitions only to remove managed legacy entries.
 
-export type UsageQuery = { sinceMs?: number; untilMs?: number; sessionID?: string; sessionIDs?: string[] }
-export type UsageMessage = SessionMessageAssistant & { sessionID: string }
-export type UsageSnapshot = { sessions: ReadonlyMap<string, SessionInfo>; messages: readonly UsageMessage[] }
-export type UsageSource = {
-  load(query: UsageQuery, signal?: AbortSignal): Promise<UsageSnapshot>
-  listSessions(signal?: AbortSignal): Promise<SessionInfo[]>
-}
-// Public exports from usage-source.ts:
-export declare function createUsageSource(source: SessionSource): UsageSource
-export class SessionNotFoundError extends Error {
-  constructor(readonly sessionID: string) { super(`Session not found: ${sessionID}`) }
-}
-// Existing functions become transport-injected, with no local-storage default:
-export declare function aggregateUsage(params: UsageQuery, source: UsageSource, signal?: AbortSignal): Promise<AggregateResult>
-export declare function resolveSessionTree(rootSessionID: string, source: UsageSource, signal?: AbortSignal): Promise<SessionTreeNode[]>
-export declare function computeTokenReport(params: ComputeTokenReportParams, dependencies: ComputeTokenReportDependencies): Promise<TokenReportData>
-
-// Replace the old typeof aliases in token-report-data.ts with bound signatures.
-export type ComputeTokenReportDependencies = {
-  aggregateUsage(params: UsageQuery): Promise<AggregateResult>
-  resolveSessionTree(sessionID: string): Promise<SessionTreeNode[]>
-}
-```
-
-`AggregateResult` and `SessionTreeNode` remain defined in `lib/tokens/quota-stats.ts`; `ComputeTokenReportParams` and `TokenReportData` remain in `lib/tokens/token-report-data.ts`. Import those existing types where needed. Pass the optional signal through aggregation to `UsageSource.load`, and through tree lookup to `UsageSource.listSessions`.
-
-- [ ] **Step 1: Replace SQLite fixtures with paginated native source fixtures.** Cover all eight commands, every token bucket, native model IDs, duplicate messages, local-calendar date boundaries, unknown/unpriced models, nested descendants, missing root and API errors. Keep existing pricing snapshots/expected estimates. Test the existing inclusive time-boundary behavior exactly rather than changing report semantics during migration.
+- [ ] **Step 1: Update existing registration expectations and observe failure.** Amend the manifest/export test to the six retained features before changing source:
 
 ```js
-const source = createUsageSource({
-  async listSessions() { return [{ id: "ses_one", title: "One" }] },
-  async getSession() { return { id: "ses_one", title: "One" } },
-  async listMessages() { return [
-    { id: "msg_user", type: "user", time: { created: 10 }, text: "hello" },
-    { id: "msg_a", type: "assistant", time: { created: 20 }, model: { providerID: "openai", id: "gpt-test" }, tokens: { input: 3, output: 2, reasoning: 1, cache: { read: 4, write: 5 } } },
-  ] },
-})
-const result = await source.load({ sessionID: "ses_one", sinceMs: 20, untilMs: 20 })
-assert.deepEqual(result.messages.map(x => x.id), ["msg_a"])
-assert.equal(result.messages[0].sessionID, "ses_one")
+assert.deepEqual(pluginManifest.map(entry => entry.key), [
+  "home", "context", "ses-tokens", "subagent", "quota", "mcp",
+])
+assert.equal(Object.hasOwn(pkg.exports, "./token-report"), false)
 ```
 
-Run focused usage-source tests before implementation; expect the new source import to fail.
+- [ ] **Step 2: Delete the feature and report-only dependencies.** Audit imports before removing the report pipeline and pricing assets. Remove its commands, prompts, report-session creation, shared exports, package registration and report-only tests. Keep all live SesTokens/Context accounting and connected pagination used by snapshots. Trim aggregate tests at report boundaries rather than deleting coverage for retained features.
 
-- [ ] **Step 2: Implement transport-injected aggregation.** Use Task 2 for every page. Bound multi-session message loading at four; pass signals to active requests and stop queued work after failure/abort. Empty arrays yield zero usage; only native missing-session errors map to `SessionNotFoundError`. Use a snapshot's session index for titles, and preserve grouping/pricing by adapting `message.model.providerID`/`.id` at the pricing call. Remove DB paths from report errors and strings.
+- [ ] **Step 3: Remove managed deployed remnants.** Extend retired cleanup for `opencode-tools-token-report.js`, its managed package directory and `tui/token-report.tsx`, plus obsolete command IDs. Use temporary fixture roots to demonstrate retired registration/artifact removal, preservation of unrelated same-basename plugins, and idempotence. Do not touch user sessions/data or live configuration. Task 8 carries these retirements into the new native deployment format.
 
-```ts
-const usage = createUsageSource(createSessionSource(api.client))
-const reportLifetime = new AbortController()
-scope.onCleanup(() => reportLifetime.abort())
-const dependencies: ComputeTokenReportDependencies = {
-  aggregateUsage: (params) => aggregateUsage(params, usage, reportLifetime.signal),
-  resolveSessionTree: (sessionID) => resolveSessionTree(sessionID, usage, reportLifetime.signal),
-}
-```
-
-- [ ] **Step 3: Port commands, Home creation and non-executing persistence.** Register a native global keymap layer with the existing command IDs and slash names. Use the native promise-based date prompt; cancel without computation or persistence. Reuse the Home report session; coordinate concurrent first invocations with one in-flight creation promise. A failed creation stops the operation and produces the existing toast.
-
-```ts
-api.keymap.layer(() => ({ mode: "global", commands: commands.map((command) => ({
-  id: `aamkye.${command.id}`,
-  title: getCommandTitle(command.id),
-  palette: true,
-  slash: { name: command.id, ...(command.id === "tokens_between" ? { arguments: true as const } : {}) },
-  run: (input) => runReport(command.id, input),
-})) }))
-
-const session = await api.client.session.create({
-  title: "Token Reports", location: api.location ?? api.data.location.default(),
-})
-api.ui.router.navigate({ type: "session", sessionID: session.id })
-await api.client.session.synthetic({ sessionID, text, resume: false })
-```
-
-`runReport(command: TokenReportCommandId, input?: string): Promise<void>` is the local orchestration function in `tui/token-report.tsx`; `commands` is `TOKEN_REPORT_COMMANDS`. Use native `ui.dialog.prompt({ title, placeholder })`; remove the old custom escape mode if the native prompt already owns cancellation. Check disposal after awaited prompts/creation and before further side effects.
-
-- [ ] **Step 4: Verify persistence never prompts a model and commit.** In `tests/token-tui.test.mjs`, supply a client whose `session.prompt` and `session.generate` throw if called; assert each report uses `synthetic` with `resume: false`. Test create failure, cancellation, concurrent Home creation, compute error and write error separately.
+- [ ] **Step 4: Verify retained behavior and commit.** Remove active README report instructions and examples; historical records remain history. Rebuild focused retained compiler outputs, run covering cleanup tests and the retained checks below, and inspect active source/build/test references for dead imports or live report registration.
 
 ```sh
-node tests/compile-presentation.mjs usage-source token-report-feature token-tui token-tui-controlled
-node --test tests/usage-source.test.mjs tests/quota-stats.test.mjs tests/token-commands.test.mjs tests/token-tui.test.mjs tests/modelsdev-pricing.test.mjs
+node tests/compile-presentation.mjs session-source ses-tokens-model ses-tokens-source context-model
+node --test tests/plugin-manifest.test.mjs tests/presentation-compile-harness.test.mjs tests/session-source.test.mjs tests/ses-tokens-model.test.mjs tests/ses-tokens-source.test.mjs tests/context-model.test.mjs
+npm run typecheck
 git diff --check
 ```
 
-Expected: eight reports preserve accounting/pricing and no report initiates generation. Commit `refactor(reports): use connected v2 session data`.
+Record pending session-rename diagnostics separately until Task 7. Commit the removal and this scope amendment with a Conventional Commit describing the intentional compatibility break. Do not commit ignored execution reports. Final full-suite/build/smoke gates still apply.
 
 ### Task 7: Register native manual session renaming
 
@@ -621,7 +560,7 @@ Expected: explicit/generated rename, preserved manual title and distinct failure
 
 **Files:** Modify `build-plugins.mjs`, `build-session-rename.mjs`, `deploy-plugins.mjs`, `plugin-manifest.json`, `plugin-manifest.mjs`, `tui/runtime/manifest.ts`, `package.json`; remove root `tui.json`. Update `tests/plugin-build.test.mjs`, `plugin-deploy.test.mjs`, `plugin-manifest.test.mjs`, `session-rename-artifact.test.mjs`, `session-rename-deploy.test.mjs`, `shared-boundary.test.mjs`, `plugin-wiring.test.mjs`.
 
-**Interfaces:** Preserve `buildPlugins({ logLevel } = {})`, `buildSessionRename({ logLevel } = {})`, `deployPlugins(targetRoot, { logLevel = "info", projectConfigRoot } = {})` and `resolveGlobalConfigRoot()` public entrypoints. Keep the feature manifest's seven ordered records; derive each package directory from its managed `opencode-tools-<key>` name. Quota-service and session-rename are explicit server companion build outputs.
+**Interfaces:** Preserve `buildPlugins({ logLevel } = {})`, `buildSessionRename({ logLevel } = {})`, `deployPlugins(targetRoot, { logLevel = "info", projectConfigRoot } = {})` and `resolveGlobalConfigRoot()` public entrypoints. Keep the feature manifest's six ordered records; derive each package directory from its managed `opencode-tools-<key>` name. Quota-service and session-rename are explicit server companion build outputs.
 
 - [ ] **Step 1: Update artifact and temp-deployment expectations.** Assert each retained package has `package.json`, `index.js` and `tui.js`, with the original stable plugin ID. Verify both exports resolve, native server registrations include the independent quota companion, and no retired artifact is generated.
 
@@ -676,7 +615,7 @@ Here `text` and `configPath` are the selected existing config's contents/path; `
 
 This is a shape example; actual feature entries follow the complete manifest order. Deploy package directories beside the target `opencode.json(c)`, not into an auto-discovery directory that would double-load explicit registrations. Local target remains `<project>/.opencode`; global target remains the XDG-aware OpenCode config root. The quota-service registration is present independently of the Quota UI.
 
-Clean managed V1 registrations from `tui.json(c)` and existing `cli.json(c)` without moving unrelated CLI settings into server configuration. Do not create project-local `cli.json`. Remove only recognized managed LSP/TODO/legacy artifacts and obsolete token command entries from singular or plural command containers. Handle managed built-in disables only after verifying native plugin IDs. Preserve unrelated files, plugins and command definitions, including similarly named files outside the managed target. Write config after successful builds/copies; repeated deployment must produce identical files and registrations.
+Clean managed V1 registrations from `tui.json(c)` and existing `cli.json(c)` without moving unrelated CLI settings into server configuration. Do not create project-local `cli.json`. Remove only recognized managed LSP/TODO/Token Reports/legacy artifacts and obsolete token command entries from singular or plural command containers. Handle managed built-in disables only after verifying native plugin IDs. Preserve unrelated files, plugins and command definitions, including similarly named files outside the managed target. Write config after successful builds/copies; repeated deployment must produce identical files and registrations.
 
 - [ ] **Step 4: Verify packaging, migration preservation and idempotence.** Add temporary fixtures with JSONC comments, existing native entries, malformed config, unrelated matching basenames, retired plugins, custom quota options and all legacy precedence cases.
 
@@ -695,9 +634,9 @@ Expected: complete packages and idempotent local/global migration preserving unr
 
 **Interfaces:** `npm run test:v2-smoke` runs `node tests/v2-plugin-smoke.mjs`. The script uses temporary XDG config/data/state/cache roots and the installed `opencode` 2.0.16 executable; it returns nonzero on failed loading and cleans up only its own process and temporary files.
 
-- [ ] **Step 1: Update the real-host smoke harness and current usage documentation.** Document the seven retained features, V2 version floor, native package layout/options, local/global registration, global-only CLI settings, retired panels, connected-server report scope, and server-side quota credential resolution. Explain that existing V1 registrations are migration inputs, not valid new setup examples.
+- [ ] **Step 1: Update the real-host smoke harness and current usage documentation.** Document the six retained features, V2 version floor, native package layout/options, local/global registration, global-only CLI settings, retired panels and Token Reports, and server-side quota credential resolution. Explain that existing V1 registrations are migration inputs, not valid new setup examples.
 
-The installed 2.0.16 help confirms `opencode --standalone <directory>` for a private-server TUI and `opencode serve --hostname <host> --port <integer>` for an explicit API server. Use the private-server TUI under a PTY for the integration test, never the shared-service commands. Deploy the built packages into the smoke root and include a smoke-only paired probe plugin that records successful native server/CLI setup and cleanup into that root. Through the probe's native client, assert the managed plugin IDs and `/session-rename` registration, call quota RPC with no credentials and expect `configured: false`, and persist a report into a smoke-only session with `resume: false` while asserting no execution starts. Check sidebar/Home slot registration and absence of plugin-load errors, then terminate the PTY normally and inspect its cleanup receipt. Use a 30-second deadline and include captured startup errors on failure. Do not classify an import-only test as a real TUI load.
+The installed 2.0.16 help confirms `opencode --standalone <directory>` for a private-server TUI and `opencode serve --hostname <host> --port <integer>` for an explicit API server. Use the private-server TUI under a PTY for the integration test, never the shared-service commands. Deploy the built packages into the smoke root and include a smoke-only paired probe plugin that records successful native server/CLI setup and cleanup into that root. Through the probe's native client, assert the six managed UI plugin IDs and `/session-rename` registration, call quota RPC with no credentials and expect `configured: false`, and verify invalid rename feedback does not start execution. Assert retired Token Reports IDs/commands are absent. Check sidebar/Home slot registration and absence of plugin-load errors, then terminate the PTY normally and inspect its cleanup receipt. Use a 30-second deadline and include captured startup errors on failure. Do not classify an import-only test as a real TUI load.
 
 ```js
 const root = await mkdtemp(join(approvedTempRoot, "opencode-tools-v2-"))
@@ -731,7 +670,7 @@ git diff --check
 
 Use the mounted/terminal rendering tests to verify the 37-cell layouts and session-change resets. Search active source/build/tests for old SDK imports, `api.state`, old slots/theme/lifecycle calls, V1 SQLite paths and obsolete runtime URLs. Migration-input fixtures and historical docs may retain deliberate V1 strings; inspect matches instead of hiding them behind a broad exclusion. Require all current state fixtures to compile against actual native types.
 
-- [ ] **Step 3: Review against the approved spec, commit and report.** Check every acceptance item in spec lines 165–185 against concrete test/smoke evidence. Review the complete diff for accidental edits to user configuration, credentials or unrelated work. Keep the work on `feat/opencode-v2`.
+- [ ] **Step 3: Review against the amended approved spec, commit and report.** Check every item in the spec's Verification and acceptance section against concrete test/smoke evidence. Review the complete diff for accidental edits to user configuration, credentials or unrelated work. Keep the work on `feat/opencode-v2`.
 
 Commit the assembled migration/docs with a Conventional Commit that records the compatibility break, for example:
 
@@ -739,10 +678,10 @@ Commit the assembled migration/docs with a Conventional Commit that records the 
 feat(migration)!: require native opencode v2
 
 Complete the native plugin, client and deployment migration while retaining
-the supported panels, reports, quota providers and manual session rename.
+the supported panels, quota providers and manual session rename.
 
 BREAKING CHANGE: requires OpenCode 2.0.16 or newer; use the native deployment
-layout and plugins configuration. The LSP and TODO panels are retired.
+layout and plugins configuration. LSP, TODO and Token Reports are retired.
 ```
 
 Final response: branch and commits, retained functionality and approved retirements, exact verification results, and any unresolved host-level limitation. Do not merge or deploy into the user's live environment as part of verification.
@@ -750,7 +689,7 @@ Final response: branch and commits, retained functionality and approved retireme
 ## Spec coverage map
 
 - Native APIs/types/lifetime and retired features: Tasks 1, 3, 4, 5, 6, 7.
-- Complete connected data/accounting/cancellation: Tasks 2, 4, 6.
+- Complete connected data/accounting/cancellation: Tasks 2, 4.
 - Quota credentials/RPC/consumer lifetime/remote location: Task 5.
 - Explicit/generated manual rename and title ownership: Task 7.
 - Native package exports/config preservation/idempotence: Task 8.

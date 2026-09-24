@@ -9,7 +9,6 @@ const {
   default: homePlugin,
   homeProviderHubTestKey,
 } = await import("../.tmp-test/plugin-adapters-home-fixture.mjs")
-const { default: tokenPlugin, registerTokenReportTui, tokenReportCommands } = await import("../.tmp-test/plugin-adapters-token-fixture.mjs")
 const { default: mcpPlugin } = await import("../.tmp-test/plugin-adapters-mcp-fixture.mjs")
 const { default: subagentPlugin } = await import("../.tmp-test/plugin-adapters-subagent-fixture.mjs")
 
@@ -415,41 +414,31 @@ function slotNames(api) {
   return api.slots.registrations.flatMap((registration) => Object.keys(registration.slots))
 }
 
-function keymapLayers(api) {
-  return api.keymap.registrations.map((layer) => layer.mode ?? "default")
-}
-
 test("current feature adapters expose normalized standalone plugin contracts", async () => {
   const quotaApi = createApi()
   const homeApi = createApi()
-  const tokenApi = createApi({ route: { name: "session", params: { sessionID: "session-1" } } })
   const mcpApi = createApi()
 
   try {
     await activate(quotaPlugin, undefined, quotaApi.api)
     await activate(homePlugin, undefined, homeApi.api)
-    await activate(tokenPlugin, undefined, tokenApi.api)
     await activate(mcpPlugin, undefined, mcpApi.api)
 
     assert.deepEqual(
-      [quotaPlugin.id, homePlugin.id, tokenPlugin.id, mcpPlugin.id],
+      [quotaPlugin.id, homePlugin.id, mcpPlugin.id],
       [
         "aamkye/opencode-tools-quota",
         "aamkye/opencode-tools-home",
-        "aamkye/opencode-tools-token-report",
         "aamkye/opencode-tools-mcp",
       ],
     )
     assert.deepEqual(slotNames(quotaApi.api), ["sidebar_content", "session_prompt_right"])
     assert.deepEqual(slotNames(homeApi.api), ["home_bottom"])
-    assert.equal(slotNames(tokenApi.api).length, 0)
-    assert.equal(keymapLayers(tokenApi.api).length, 2)
     assert.deepEqual(slotNames(mcpApi.api), ["sidebar_content", "session_prompt_right"])
     assert.equal(mcpApi.api.slots.registrations[0].order, 140)
   } finally {
     await quotaApi.lifecycle.dispose()
     await homeApi.lifecycle.dispose()
-    await tokenApi.lifecycle.dispose()
     await mcpApi.lifecycle.dispose()
   }
 })
@@ -735,35 +724,4 @@ test("ordinary metadata cannot override hub acquisition and non-functions are ig
   } finally {
     await lifecycle.dispose()
   }
-})
-
-test("token adapter registers only the two keymap layers", async () => {
-  const { api, lifecycle } = createApi({ route: { name: "session", params: { sessionID: "session-1" } } })
-
-  try {
-    assert.equal(tokenPlugin.id, "aamkye/opencode-tools-token-report")
-    await activate(tokenPlugin, undefined, api)
-
-    assert.deepEqual(api.slots.registrations, [])
-    assert.equal(api.keymap.registrations.length, 2)
-    assert.deepEqual(keymapLayers(api), ["default", "aamkye.token-report-range"])
-    assert.deepEqual(tokenReportCommands(api).map((command) => command.slashName), [
-      "tokens_today",
-      "tokens_daily",
-      "tokens_weekly",
-      "tokens_monthly",
-      "tokens_all",
-      "tokens_session",
-      "tokens_session_all",
-      "tokens_between",
-    ])
-    assert.equal(api.route.registrations.length, 0)
-    assert.equal(api.event.listeners.length, 0)
-    assert.ok(lifecycle.count() > 0)
-  } finally {
-    await lifecycle.dispose()
-  }
-
-  assert.equal(api.event.listeners.length, 0)
-  assert.equal(lifecycle.count(), 0)
 })

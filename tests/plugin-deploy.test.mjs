@@ -48,7 +48,6 @@ const tokenCommands = [
 ]
 const expectedManagedSpecs = [
   "./opencode-tools-home.js",
-  "./opencode-tools-token-report.js",
   "./opencode-tools-context.js",
   "./opencode-tools-ses-tokens.js",
   "./opencode-tools-subagent.js",
@@ -62,6 +61,8 @@ const deployedFiles = [
   ...expectedManagedSpecs.map((spec) => spec.slice(2)),
 ]
 const obsoleteArtifacts = [
+  "opencode-tools-token-report.js",
+  "tui/token-report.tsx",
   `${obsoleteNamespace}.js`,
   `${obsoleteNamespace}.ts`,
   `${obsoleteNamespace}-zai.tsx`,
@@ -318,6 +319,68 @@ test("deployment removes an empty managed command object", async () => {
   assert.deepEqual(JSON.parse(tuiBytes).plugin, expectedManagedEntries())
   assertSingleTrailingNewline(openCodeBytes, "opencode.json")
   assertSingleTrailingNewline(tuiBytes, "tui.json")
+})
+
+test("deployment retires managed token reports, preserves same-basename plugins, and is stable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opencode-tools-retirement-"))
+  temporaryRoots.push(root)
+  const target = join(root, "managed")
+  const unrelatedRoot = join(root, "unrelated")
+  const retiredPaths = [
+    "opencode-tools-token-report.js",
+    "tui/token-report.tsx",
+    "opencode-tools-token-report",
+    "plugins/opencode-tools-token-report",
+  ]
+  const unrelatedFiles = []
+  for (const path of retiredPaths) {
+    const file = path.endsWith("opencode-tools-token-report") ? `${path}/package.json` : path
+    for (const base of [target, unrelatedRoot]) {
+      await mkdir(dirname(join(base, file)), { recursive: true })
+      await writeFile(join(base, file), `preserve outside managed root: ${file}\n`)
+    }
+    unrelatedFiles.push(file)
+  }
+  const unrelatedEntries = [
+    [pathToFileURL(join(unrelatedRoot, "opencode-tools-token-report.js")).href, { preserve: true }],
+    join(unrelatedRoot, "tui/token-report.tsx"),
+    "../unrelated/opencode-tools-token-report",
+    "../unrelated/plugins/opencode-tools-token-report",
+  ]
+  await writeFile(join(target, "tui.json"), JSON.stringify({
+    theme: "preserved",
+    plugin: [
+      ...unrelatedEntries,
+      "aamkye/opencode-tools-token-report",
+      ["@aamkye/opencode-tools/token-report", { retired: "not quota options" }],
+      ["opencode-tools/token-report", { retired: "not quota options" }],
+      ...retiredPaths.map((path) => `./${path}`),
+      [pathToFileURL(join(target, "opencode-tools-token-report.js")).href + "?v=1", {}],
+    ],
+  }))
+  await writeFile(join(target, "opencode.json"), JSON.stringify({
+    command: {
+      keep: { template: "keep me" },
+      ...Object.fromEntries(tokenCommands.map((id) => [id, { template: `/${id}` }])),
+    },
+  }))
+
+  const deployed = [
+    "./opencode-tools-home.js", "./opencode-tools-context.js", "./opencode-tools-ses-tokens.js",
+    "./opencode-tools-subagent.js", "./opencode-tools-quota.js", "./opencode-tools-mcp.js",
+  ]
+  const files = ["tui.json", "opencode.json", "opencode-tools-shared.js", "plugins/session-rename.ts", ...deployed.map((path) => path.slice(2))]
+  let previous
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await deployPlugins(target, { logLevel: "silent" })
+    const snapshot = Object.fromEntries(await Promise.all(files.map(async (path) => [path, await readFile(join(target, path), "utf8")])))
+    assert.deepEqual(JSON.parse(snapshot["tui.json"]), { theme: "preserved", plugin: [...unrelatedEntries, ...deployed] })
+    assert.deepEqual(JSON.parse(snapshot["opencode.json"]), { command: { keep: { template: "keep me" } } })
+    for (const path of retiredPaths) await assert.rejects(readFile(join(target, path)), { code: "ENOENT" }, path)
+    for (const file of unrelatedFiles) assert.equal(await readFile(join(unrelatedRoot, file), "utf8"), `preserve outside managed root: ${file}\n`)
+    if (previous) assert.deepEqual(snapshot, previous)
+    previous = snapshot
+  }
 })
 
 test("local deployment preserves project fallback semantics across repeated migration", async () => {

@@ -27,3 +27,16 @@ validatePluginManifest(records)
 
 export const pluginManifest = Object.freeze(records.map((entry) => Object.freeze(entry)))
 export const PLUGIN_KEYS = Object.freeze(pluginManifest.map((entry) => entry.key))
+
+// Retirement inputs only. Paths are relative to the managed build/deployment root.
+export const retiredPluginPaths = Object.freeze([
+  "opencode-tools-token-report.js",
+  "tui/token-report.tsx",
+  "opencode-tools-token-report",
+  "plugins/opencode-tools-token-report",
+])
+export const retiredPluginSpecs = Object.freeze([
+  "aamkye/opencode-tools-token-report",
+  "@aamkye/opencode-tools/token-report",
+  "opencode-tools/token-report",
+])

@@ -7,8 +7,10 @@ Migrate the active codebase to native OpenCode V2 APIs on the separate
 
 The user approved these scope decisions:
 
-- Retain Home, Context, SesTokens, SubAgent, Quota, MCP, Token Reports, and the
+- Retain Home, Context, SesTokens, SubAgent, Quota, MCP, and the
   server-side `/session-rename` command.
+- Remove Token Reports, its commands, and report-only code per the user's
+  subsequent request: "get rid of token reports".
 - Retire the LSP panel and chip because V2 does not run LSP servers.
 - Retire the TODO panel and chip because V2 2.0.16 has no equivalent session
   TODO feed. Do not introduce plugin-owned task tools or storage.
@@ -61,23 +63,22 @@ separate V2 plugin context objects.
   categories. Store durable failure evidence through V2 storage.
 - **MCP:** use location-scoped V2 MCP server data while retaining status buckets
   and collapsed counts.
-- **Token Reports:** retain all eight slash commands and palette entries,
-  date-range input, report-session creation from Home, and navigation.
 
 The retained panels and chips follow the existing 37-column layout rules,
 truncation, colors, separators, and collapse defaults. Session changes reset
-ephemeral disclosure state as before. Remove LSP/TODO source, exports, manifest
-records, fixtures, and current documentation that advertise those features.
+ephemeral disclosure state as before. Remove LSP/TODO and Token Reports source,
+exports, manifest records, fixtures, and current documentation that advertise
+those features.
 
-## Connected data and token reports
+## Connected session data
 
-Replace direct reads of the V1 SQLite schema with the TUI's authenticated V2
-client. Reports and snapshots operate against the connected server, including
-remote servers. All-session reports cover the sessions available from that
-server; they do not silently fall back to a local V1 database.
+Snapshots operate against the connected server through the TUI's authenticated
+V2 client, including remote servers. Remove the retired report pipeline, its
+pricing snapshots, and obsolete SQLite/runtime-path code when no retained
+feature needs them.
 
-Introduce a small client-backed session/message source used by snapshot and
-report services. It must:
+Introduce a small client-backed session/message source used by snapshot
+services. It must:
 
 - Follow every session and message cursor needed for a complete result, keeping
   filters consistent across pages and respecting cursor/order constraints.
@@ -86,18 +87,11 @@ report services. It must:
 - Retain bounded message-fetch concurrency and propagate cancellation through
   requests and queued work.
 - Distinguish an empty result from an API failure or missing session.
-- Count each assistant message once and preserve the existing date-window,
-  session-tree, model grouping, and pricing-estimate rules.
+- Count each assistant message once and preserve the existing session-tree
+  accounting rules.
 
-Keep report parsing, aggregation, pricing, and rendering independent of the
-transport. Replace filesystem-specific lookup errors with connected-session
-lookup errors. Remove obsolete SQLite adapters, runtime-path probes, and their
-dependencies when no retained feature needs them.
-
-Persist reports with `session.synthetic({ sessionID, text, resume: false })`.
-The explicit `resume: false` is required: a report must not schedule a model
-response. Creation, computation, and persistence failures retain clear feedback;
-failed creation cannot continue into a dialog or report write.
+Token Reports no longer registers slash commands, palette entries, date prompts,
+or report-session creation. Existing user sessions and host data are preserved.
 
 ## Quota server companion
 
@@ -149,8 +143,9 @@ in the appropriate server configuration. Global terminal preferences belong in
 `cli.json`; do not generate a project-local CLI configuration. Migrate managed
 V1 registrations and options from existing deployment inputs, including legacy
 tuples and paths. Preserve unrelated configuration and plugin entries. Remove
-managed stale registrations and artifacts for retired LSP/TODO features and
-obsolete token-command definitions. Repeated deployment must be idempotent.
+managed stale registrations and artifacts for retired LSP/TODO and Token Reports
+features, including obsolete token-command definitions. Repeated deployment must
+be idempotent.
 
 Translate managed built-in-panel disable settings only where a verified V2
 plugin ID exists; document any required manual setting rather than inventing
@@ -168,8 +163,9 @@ Required regression coverage includes:
    leases across distinct plugin contexts.
 2. Multi-page sessions and messages, nested trees, accounting, cancellation,
    bounded concurrency, missing sessions, and failed refresh retention.
-3. All token-report commands, date bounds, Home creation/reuse, and synthetic
-   persistence with execution disabled.
+3. Token Reports is absent from active registration, exports, build outputs,
+   commands, and current usage documentation; managed legacy inputs are removed
+   on deployment without deleting user sessions or unrelated files.
 4. Native MCP/model/status mapping, collapse resets, and 37-column rendering.
 5. Quota connection resolution, RPC result shape, provider failures, and unload
    cleanup without exposing resolved credentials.

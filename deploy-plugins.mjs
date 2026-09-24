@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { buildPlugins } from "./build-plugins.mjs"
 import { buildSessionRename } from "./build-session-rename.mjs"
-import { pluginManifest, validatePluginManifest } from "./plugin-manifest.mjs"
+import { pluginManifest, retiredPluginPaths, retiredPluginSpecs, validatePluginManifest } from "./plugin-manifest.mjs"
 
 const projectRoot = dirname(fileURLToPath(import.meta.url))
 const obsoleteNamespace = ["opencode", "quota"].join("-")
@@ -48,6 +48,7 @@ const managedTokenCommandIds = [
 
 const managedConfigPaths = [
   ...pluginManifest.flatMap((entry) => [entry.outfile, entry.source]),
+  ...retiredPluginPaths,
   ...historicalManagedPaths,
 ]
 
@@ -78,11 +79,13 @@ function managedConfigPath(spec, targetRoot) {
 
 function isManagedSpec(spec, targetRoot) {
   const normalized = spec.toLowerCase().replace(/[?#].*$/, "")
-  return /^(?:@aamkye\/)?opencode-(?:tools|quota)(?:\/.*)?$/.test(normalized)
+  return retiredPluginSpecs.includes(normalized)
+    || /^(?:@aamkye\/)?opencode-(?:tools|quota)(?:\/.*)?$/.test(normalized)
     || managedConfigPath(spec, targetRoot) !== undefined
 }
 
 function optionsPriority(spec, targetRoot) {
+  if (retiredPluginSpecs.includes(spec.toLowerCase().replace(/[?#].*$/, ""))) return Infinity
   const path = managedConfigPath(spec, targetRoot)
   if (path === quotaPlugin?.outfile) return 0
   if (path === quotaPlugin?.source) return 1
@@ -183,6 +186,7 @@ export async function deployPlugins(targetRoot, { logLevel = "info", projectConf
   await rm(join(targetRoot, "plugins", legacySessionRenameArtifact), { force: true })
 
   await Promise.all(obsoleteFiles.map((file) => rm(join(targetRoot, file), { force: true })))
+  await Promise.all(retiredPluginPaths.map((path) => rm(join(targetRoot, path), { recursive: true, force: true })))
 
   const configPath = join(targetRoot, "tui.json")
   const config = await readTuiConfig(configPath)

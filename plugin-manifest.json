@@ -7,13 +7,6 @@
     "options": "none"
   },
   {
-    "key": "token-report",
-    "id": "aamkye/opencode-tools-token-report",
-    "source": "tui/token-report.tsx",
-    "outfile": "opencode-tools-token-report.js",
-    "options": "none"
-  },
-  {
     "key": "context",
     "id": "aamkye/opencode-tools-context",
     "source": "tui/context.tsx",
