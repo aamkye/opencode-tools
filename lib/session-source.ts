@@ -8,29 +8,41 @@ export type SessionSource = {
   listMessages(sessionID: string, signal?: AbortSignal): Promise<SessionMessageInfo[]>
 }
 
+async function collectPages<T extends { id: string }>(
+  requestPage: (cursor?: string) => Promise<{ data: T[]; cursor: { next?: string | null } }>,
+  kind: "session" | "message",
+  signal?: AbortSignal,
+): Promise<T[]> {
+  const records = new Map<string, T>()
+  const seenCursors = new Set<string>()
+  let cursor: string | undefined
+
+  do {
+    signal?.throwIfAborted()
+    const page = await requestPage(cursor)
+    signal?.throwIfAborted()
+    for (const record of page.data) records.set(record.id, record)
+    const next = page.cursor.next ?? undefined
+    if (next && seenCursors.has(next)) throw new Error(`Repeated ${kind} cursor`)
+    if (next) seenCursors.add(next)
+    cursor = next
+  } while (cursor)
+
+  return [...records.values()]
+}
+
 export function createSessionSource(client: Pick<OpenCodeClient, "session" | "message">): SessionSource {
   return {
     async listSessions(filter, signal) {
       const filters = { ...filter }
-      const records = new Map<string, SessionInfo>()
-      const seenCursors = new Set<string>()
-      let cursor: string | undefined
-
-      do {
-        signal?.throwIfAborted()
-        const page = await client.session.list(
+      return collectPages(
+        (cursor) => client.session.list(
           { ...filters, limit: 100, ...(cursor ? { cursor } : { order: "asc" as const }) },
           { signal },
-        )
-        signal?.throwIfAborted()
-        for (const session of page.data) records.set(session.id, session)
-        const next = page.cursor.next ?? undefined
-        if (next && seenCursors.has(next)) throw new Error("Repeated session cursor")
-        if (next) seenCursors.add(next)
-        cursor = next
-      } while (cursor)
-
-      return [...records.values()]
+        ),
+        "session",
+        signal,
+      )
     },
 
     async getSession(sessionID, signal) {
@@ -41,25 +53,14 @@ export function createSessionSource(client: Pick<OpenCodeClient, "session" | "me
     },
 
     async listMessages(sessionID, signal) {
-      const records = new Map<string, SessionMessageInfo>()
-      const seenCursors = new Set<string>()
-      let cursor: string | undefined
-
-      do {
-        signal?.throwIfAborted()
-        const page = await client.message.list(
+      return collectPages(
+        (cursor) => client.message.list(
           { sessionID, limit: 100, ...(cursor ? { cursor } : { order: "asc" as const }) },
           { signal },
-        )
-        signal?.throwIfAborted()
-        for (const message of page.data) records.set(message.id, message)
-        const next = page.cursor.next ?? undefined
-        if (next && seenCursors.has(next)) throw new Error("Repeated message cursor")
-        if (next) seenCursors.add(next)
-        cursor = next
-      } while (cursor)
-
-      return [...records.values()]
+        ),
+        "message",
+        signal,
+      )
     },
   }
 }
