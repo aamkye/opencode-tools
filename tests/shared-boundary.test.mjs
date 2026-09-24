@@ -97,15 +97,15 @@ test("relative import allowlists cover static, side-effect, dynamic, and CommonJ
   ])
 })
 
-test("TODO facade syntax checks reject comments and strings", () => {
+test("facade syntax checks reject comments and strings", () => {
   const deadText = ts.createSourceFile("dead.tsx", `
-    // export { createTodoPanelModel } from "../tui/features/todo.js"
-    const text = 'import { createTodoPanelModel } from "../shared/opencode-tools-shared.js"; createTodoPanelModel()'
+    // export { createContextPanelModel } from "../tui/features/context.js"
+    const text = 'import { createContextPanelModel } from "../shared/opencode-tools-shared.js"; createContextPanelModel()'
   `, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
 
-  assert.equal(hasNamedReExport(deadText, "../tui/features/todo.js", "createTodoPanelModel"), false)
-  assert.equal(namedImportLocalName(deadText, "../shared/opencode-tools-shared.js", "createTodoPanelModel"), undefined)
-  assert.equal(callsIdentifier(deadText, "createTodoPanelModel"), false)
+  assert.equal(hasNamedReExport(deadText, "../tui/features/context.js", "createContextPanelModel"), false)
+  assert.equal(namedImportLocalName(deadText, "../shared/opencode-tools-shared.js", "createContextPanelModel"), undefined)
+  assert.equal(callsIdentifier(deadText, "createContextPanelModel"), false)
 })
 
 test("loadable TUI entries use the shared facade for computation", () => {
@@ -114,8 +114,6 @@ test("loadable TUI entries use the shared facade for computation", () => {
   const mcp = source("tui/mcp.tsx")
   const context = source("tui/context.tsx")
   const contextSource = parsedSource("tui/context.tsx")
-  const todo = source("tui/todo.tsx")
-  const todoSource = parsedSource("tui/todo.tsx")
   const sesTokensSource = parsedSource("tui/ses-tokens.tsx")
   const subagent = source("tui/subagent.tsx")
   const subagentSource = parsedSource("tui/subagent.tsx")
@@ -127,10 +125,6 @@ test("loadable TUI entries use the shared facade for computation", () => {
   assert.ok(contextModelImport, "tui/context.tsx must named-import createContextPanelModel from the shared facade")
   assert.ok(callsIdentifier(contextSource, contextModelImport), "tui/context.tsx must call the imported createContextPanelModel")
   assert.match(context, /from ["']\.\.\/shared\/opencode-tools-shared\.js["']/)
-  const todoModelImport = namedImportLocalName(todoSource, "../shared/opencode-tools-shared.js", "createTodoPanelModel")
-  assert.ok(todoModelImport, "tui/todo.tsx must named-import createTodoPanelModel from the shared facade")
-  assert.ok(callsIdentifier(todoSource, todoModelImport), "tui/todo.tsx must call the imported createTodoPanelModel")
-  assert.match(todo, /from ["']\.\.\/shared\/opencode-tools-shared\.js["']/)
   const sesTokensModelImport = namedImportLocalName(sesTokensSource, "../shared/opencode-tools-shared.js", "createSesTokensPanelModel")
   assert.ok(sesTokensModelImport, "tui/ses-tokens.tsx must named-import createSesTokensPanelModel from the shared facade")
   assert.ok(callsIdentifier(sesTokensSource, sesTokensModelImport), "tui/ses-tokens.tsx must call the imported createSesTokensPanelModel")
@@ -152,15 +146,12 @@ test("loadable TUI entries use the shared facade for computation", () => {
   assertRelativeImports("tui/home.tsx", ["../shared/opencode-tools-shared.js"])
   assertRelativeImports("tui/mcp.tsx", ["../shared/opencode-tools-shared.js"])
   assertRelativeImports("tui/context.tsx", ["../shared/opencode-tools-shared.js"])
-  assertRelativeImports("tui/lsp.tsx", ["../shared/opencode-tools-shared.js"])
-  assertRelativeImports("tui/todo.tsx", ["../shared/opencode-tools-shared.js"])
-  assertRelativeImports("tui/ses-tokens.tsx", ["../shared/opencode-tools-shared.js"])
-  assertRelativeImports("tui/subagent.tsx", ["../shared/opencode-tools-shared.js"])
-  assert.deepEqual(relativeImports(subagent), ["../shared/opencode-tools-shared.js"])
+  assertRelativeImports("tui/ses-tokens.tsx", ["../shared/opencode-tools-shared.js", "../lib/session-source.js"])
+  assertRelativeImports("tui/subagent.tsx", ["../shared/opencode-tools-shared.js", "../lib/session-source.js"])
+  assert.deepEqual(relativeImports(subagent), ["../lib/session-source.js", "../shared/opencode-tools-shared.js"])
   assert.doesNotMatch(subagent, /(?:^|["'])\.\/?(?:features|services)\//m)
   assert.doesNotMatch(mcp, /\.sort\(|setInterval|setTimeout/)
   assert.doesNotMatch(context, /message\.updated|setInterval|setTimeout/)
-  assert.doesNotMatch(todo, /todo\.updated|setInterval|setTimeout/)
   assert.match(subagent, /from ["']\.\.\/shared\/opencode-tools-shared\.js["']/)
 })
 
@@ -208,23 +199,18 @@ test("shared facade exports computation without plugin registration or JSX", () 
   assert.match(shared, /composeQuotaPanel/)
   assert.match(shared, /createQuotaSelection/)
   assert.match(shared, /normalizeQuotaOptions/)
-  assert.match(shared, /quotaSidebarSlotOrder/)
   assert.match(shared, /quotaAdapterShared/)
   assert.match(shared, /quotaProviderDemand/)
   assert.match(shared, /selectedQuotaProviderID/)
   assert.match(shared, /selectedSessionQuotaProviderID/)
-  assert.match(shared, /pluginDescriptor\(["']quota["']\)\.slotOrder/)
+  assert.doesNotMatch(shared, /slotOrder/)
   assert.match(shared, /formatHomeQuotaLine/)
   assert.match(shared, /homeQuotaPercentParts/)
   assert.match(shared, /homeQuotaStatusRole/)
-  assert.match(shared, /createLspPanelModel/)
+  assert.doesNotMatch(shared, /create(?:Lsp|Todo)PanelModel/)
   assert.ok(
     hasNamedReExport(sharedSource, "../tui/features/context.js", "createContextPanelModel"),
     "shared facade must re-export createContextPanelModel from the Context feature",
-  )
-  assert.ok(
-    hasNamedReExport(sharedSource, "../tui/features/todo.js", "createTodoPanelModel"),
-    "shared facade must re-export createTodoPanelModel from the TODO feature",
   )
   assert.ok(
     hasNamedReExport(sharedSource, "../tui/features/ses-tokens.js", "createSesTokensPanelModel"),
@@ -250,7 +236,7 @@ test("shared facade exports computation without plugin registration or JSX", () 
   assert.match(homeFeature, /export function formatHomeQuotaLine/)
   assert.match(homeFeature, /export function homeQuotaPercentParts/)
   assert.match(homeFeature, /export function homeQuotaStatusRole/)
-  assert.match(quotaFeature, /pluginDescriptor\(["']quota["']\)\.slotOrder/)
+  assert.doesNotMatch(quotaFeature, /slotOrder/)
   assert.doesNotMatch(quotaFeature, /quotaSidebarSlotOrder/)
   assert.doesNotMatch(quotaFeature, /\border:\s*110\b/)
   assert.doesNotMatch(source("tui/quota.tsx"), /from ["']\.\/providers\/opencode-go/)

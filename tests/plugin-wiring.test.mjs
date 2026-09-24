@@ -11,40 +11,41 @@ test("publishes and typechecks the standalone plugins", () => {
   const tsconfig = JSON.parse(readFileSync("tsconfig.json", "utf8"))
 
   assert.deepEqual(pkg.exports, {
-    "./home": "./tui/home.tsx",
-    "./context": "./tui/context.tsx",
-    "./ses-tokens": "./tui/ses-tokens.tsx",
-    "./subagent": "./tui/subagent.tsx",
-    "./quota": "./tui/quota.tsx",
-    "./mcp": "./tui/mcp.tsx",
+    "./home": "./dist/opencode-tools-home/tui.js",
+    "./context": "./dist/opencode-tools-context/tui.js",
+    "./ses-tokens": "./dist/opencode-tools-ses-tokens/tui.js",
+    "./subagent": "./dist/opencode-tools-subagent/tui.js",
+    "./quota": "./dist/opencode-tools-quota/tui.js",
+    "./mcp": "./dist/opencode-tools-mcp/tui.js",
   })
   assert.deepEqual(pkg.files, ["dist", "plugin-manifest.json", "tui", "shared", "README.md"])
   assert.deepEqual(tsconfig.include, [
-    "opencode-plugin-tui.d.ts",
+    "lib/**/*.ts",
+    "quota-service.ts",
     "tui/**/*.ts",
     "tui/**/*.tsx",
     "shared/**/*.ts",
     "tests/*-state-types.fixture.ts",
+    "tests/*-contract.fixture.ts",
   ])
-  assert.equal(pkg.engines.opencode, ">=1.18.1")
-  assert.equal(lock.packages[""].engines.opencode, ">=1.18.1")
+  assert.equal(pkg.engines.opencode, ">=2.0.16")
+  assert.equal(lock.packages[""].engines.opencode, ">=2.0.16")
+  assert.equal(pkg.devDependencies["jsonc-parser"], lock.packages[""].devDependencies["jsonc-parser"])
 })
 
 test("source modules own the TUI slots without root-config activation", () => {
   const pkg = JSON.parse(readFileSync("package.json", "utf8"))
-  const tui = JSON.parse(readFileSync("tui.json", "utf8"))
   const tsconfig = JSON.parse(readFileSync("tsconfig.json", "utf8"))
 
   assert.equal(pkg.name, "@aamkye/opencode-tools")
   assert.equal(pkg.files.includes("tui"), true)
-  assert.equal(tui.$schema, "https://opencode.ai/tui.json")
-  assert.equal(tui.plugin, undefined)
-  assert.equal(readFileSync("tui/quota.tsx", "utf8").includes("sidebar_content"), true)
-  assert.equal(readFileSync("tui/quota.tsx", "utf8").includes("home_bottom"), false)
-  assert.equal(readFileSync("tui/home.tsx", "utf8").includes("home_bottom"), true)
-  assert.equal(readFileSync("tui/home.tsx", "utf8").includes("sidebar_content"), false)
-  assert.equal(readFileSync("tui/subagent.tsx", "utf8").includes("sidebar_content"), true)
-  assert.equal(readFileSync("tui/subagent.tsx", "utf8").includes("home_bottom"), false)
+  assert.equal(existsSync("tui.json"), false)
+  assert.equal(readFileSync("tui/quota.tsx", "utf8").includes("sidebar.content"), true)
+  assert.equal(readFileSync("tui/quota.tsx", "utf8").includes("home.footer.status"), false)
+  assert.equal(readFileSync("tui/home.tsx", "utf8").includes("home.footer.status"), true)
+  assert.equal(readFileSync("tui/home.tsx", "utf8").includes("sidebar.content"), false)
+  assert.equal(readFileSync("tui/subagent.tsx", "utf8").includes("sidebar.content"), true)
+  assert.equal(readFileSync("tui/subagent.tsx", "utf8").includes("home.footer.status"), false)
   assert.equal(tsconfig.include.some((entry) => entry.includes(legacyIdentifier)), false)
   assert.equal(existsSync(`${legacyIdentifier}-home.tsx`), false)
 })

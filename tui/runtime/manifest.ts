@@ -5,7 +5,7 @@ export type PluginManifestEntry = {
   key: PluginKey
   id: string
   source: string
-  outfile: string
+  outfile: `opencode-tools-${PluginKey}/tui.js`
   options: "quota" | "defaultState" | "none"
 }
 

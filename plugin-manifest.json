@@ -3,42 +3,42 @@
     "key": "home",
     "id": "aamkye/opencode-tools-home",
     "source": "tui/home.tsx",
-    "outfile": "opencode-tools-home.js",
+    "outfile": "opencode-tools-home/tui.js",
     "options": "none"
   },
   {
     "key": "context",
     "id": "aamkye/opencode-tools-context",
     "source": "tui/context.tsx",
-    "outfile": "opencode-tools-context.js",
+    "outfile": "opencode-tools-context/tui.js",
     "options": "defaultState"
   },
   {
     "key": "ses-tokens",
     "id": "aamkye/opencode-tools-ses-tokens",
     "source": "tui/ses-tokens.tsx",
-    "outfile": "opencode-tools-ses-tokens.js",
+    "outfile": "opencode-tools-ses-tokens/tui.js",
     "options": "defaultState"
   },
   {
     "key": "subagent",
     "id": "aamkye/opencode-tools-subagent",
     "source": "tui/subagent.tsx",
-    "outfile": "opencode-tools-subagent.js",
+    "outfile": "opencode-tools-subagent/tui.js",
     "options": "defaultState"
   },
   {
     "key": "quota",
     "id": "aamkye/opencode-tools-quota",
     "source": "tui/quota.tsx",
-    "outfile": "opencode-tools-quota.js",
+    "outfile": "opencode-tools-quota/tui.js",
     "options": "quota"
   },
   {
     "key": "mcp",
     "id": "aamkye/opencode-tools-mcp",
     "source": "tui/mcp.tsx",
-    "outfile": "opencode-tools-mcp.js",
+    "outfile": "opencode-tools-mcp/tui.js",
     "options": "defaultState"
   }
 ]

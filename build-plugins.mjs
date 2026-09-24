@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { builtinModules } from "node:module"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
@@ -13,10 +13,7 @@ const hostDependencies = [
   "solid-js",
   "solid-js/*",
   "@opentui/*",
-  "@opencode-ai/plugin",
-  "@opencode-ai/plugin/*",
-  "@opencode-ai/sdk",
-  "@opencode-ai/sdk/*",
+  "@opencode/*",
   "bun:*",
   ...builtinModules,
   ...builtinModules.filter((name) => !name.startsWith("node:")).map((name) => `node:${name}`),
@@ -69,16 +66,13 @@ function sharedImport(path) {
   }
 }
 
-function hostRuntimeImports() {
-  return {
-    name: "opencode-host-runtime",
-    setup(buildApi) {
-      buildApi.onResolve({ filter: /^(?:solid-js|@opentui\/solid|@opentui\/solid\/jsx-runtime)$/ }, (args) => ({
-        external: true,
-        path: `opentui:runtime-module:${encodeURIComponent(args.path)}`,
-      }))
-    },
-  }
+async function writePackage(distRoot, name, paired) {
+  const packageRoot = resolve(distRoot, name)
+  await mkdir(packageRoot, { recursive: true })
+  await writeFile(resolve(packageRoot, "package.json"), `${JSON.stringify({
+    name, type: "module", exports: { ".": "./index.js", ...(paired ? { "./tui": "./tui.js" } : {}) },
+  }, null, 2)}\n`)
+  return packageRoot
 }
 
 export async function buildPlugins({
@@ -90,27 +84,38 @@ export async function buildPlugins({
   await mkdir(distRoot, { recursive: true })
   await rm(resolve(distRoot, "plugins/opencode-tools-tokens.js"), { force: true })
   await Promise.all(retiredPluginPaths.map((path) => rm(resolve(distRoot, path), { recursive: true, force: true })))
+  await Promise.all(manifest.map((entry) => rm(resolve(distRoot, `opencode-tools-${entry.key}.js`), { force: true })))
 
   const shared = await build({
     ...common,
     entryPoints: ["shared/opencode-tools-shared.ts"],
     logLevel,
     outfile: resolve(distRoot, "opencode-tools-shared.js"),
-    plugins: [solidTransformPlugin(), hostRuntimeImports()],
+    plugins: [solidTransformPlugin()],
   })
 
   const features = {}
   for (const entry of manifest) {
+    const packageRoot = await writePackage(distRoot, `opencode-tools-${entry.key}`, true)
+    await writeFile(resolve(packageRoot, "index.js"), `import { Plugin } from "@opencode/plugin"\nexport default Plugin.define({ id: ${JSON.stringify(entry.id)}, setup() {} })\n`)
     features[entry.key] = await build({
       ...common,
       entryPoints: [entry.source],
       logLevel,
       outfile: resolve(distRoot, entry.outfile),
-      plugins: [solidTransformPlugin(), hostRuntimeImports(), sharedImport("./opencode-tools-shared.js")],
+      plugins: [solidTransformPlugin(), sharedImport("../opencode-tools-shared.js")],
     })
   }
 
-  return { shared, features }
+  const quotaRoot = await writePackage(distRoot, "opencode-tools-quota-service", false)
+  const quotaService = await build({
+    ...common,
+    entryPoints: ["quota-service.ts"],
+    logLevel,
+    outfile: resolve(quotaRoot, "index.js"),
+  })
+
+  return { shared, features, quotaService }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

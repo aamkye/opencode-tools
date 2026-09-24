@@ -20,6 +20,11 @@ export function validatePluginManifest(entries) {
 
     if (!validOptions.has(entry.options)) throw new TypeError(`invalid options at index ${index}`)
   }
+  for (const entry of entries) {
+    if (!/^[a-z]+(?:-[a-z]+)*$/.test(entry.key) || entry.outfile !== `opencode-tools-${entry.key}/tui.js`) {
+      throw new TypeError(`invalid package output: ${entry.outfile}`)
+    }
+  }
 }
 
 const records = structuredClone(manifest)
@@ -30,6 +35,10 @@ export const PLUGIN_KEYS = Object.freeze(pluginManifest.map((entry) => entry.key
 
 // Retirement inputs only. Paths are relative to the managed build/deployment root.
 export const retiredPluginPaths = Object.freeze([
+  ...["lsp", "todo"].flatMap((key) => [
+    `opencode-tools-${key}.js`, `tui/${key}.tsx`,
+    `opencode-tools-${key}`, `plugins/opencode-tools-${key}`,
+  ]),
   "opencode-tools-token-report.js",
   "tui/token-report.tsx",
   "opencode-tools-token-report",
@@ -39,6 +48,9 @@ export const retiredPluginPaths = Object.freeze([
   "plugins/session-title.ts",
 ])
 export const retiredPluginSpecs = Object.freeze([
+  ...["lsp", "todo"].flatMap((key) => [
+    `aamkye/opencode-tools-${key}`, `@aamkye/opencode-tools/${key}`, `opencode-tools/${key}`,
+  ]),
   "aamkye/opencode-tools-token-report",
   "@aamkye/opencode-tools/token-report",
   "opencode-tools/token-report",

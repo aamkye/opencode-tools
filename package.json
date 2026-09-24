@@ -5,12 +5,12 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./home": "./tui/home.tsx",
-    "./context": "./tui/context.tsx",
-    "./ses-tokens": "./tui/ses-tokens.tsx",
-    "./subagent": "./tui/subagent.tsx",
-    "./quota": "./tui/quota.tsx",
-    "./mcp": "./tui/mcp.tsx"
+    "./home": "./dist/opencode-tools-home/tui.js",
+    "./context": "./dist/opencode-tools-context/tui.js",
+    "./ses-tokens": "./dist/opencode-tools-ses-tokens/tui.js",
+    "./subagent": "./dist/opencode-tools-subagent/tui.js",
+    "./quota": "./dist/opencode-tools-quota/tui.js",
+    "./mcp": "./dist/opencode-tools-mcp/tui.js"
   },
   "files": [
     "dist",
@@ -55,6 +55,7 @@
     "@types/node": "^26.0.1",
     "babel-preset-solid": "^1.9.12",
     "esbuild": "^0.28.1",
+    "jsonc-parser": "^3.3.1",
     "typescript": "^6.0.3"
   }
 }
