@@ -823,8 +823,7 @@ dist/
 ├── opencode-tools-quota.js
 ├── opencode-tools-mcp.js
 ├── opencode-tools-lsp.js
-├── opencode-tools-todo.js
-└── session-rename.ts
+└── opencode-tools-todo.js
 ```
 
 | File                             | Runtime ID                           | Responsibility                                                      |
@@ -838,25 +837,9 @@ dist/
 | `opencode-tools-mcp.js`          | `aamkye/opencode-tools-mcp`          | Reactive MCP sidebar health panel immediately after quota.          |
 | `opencode-tools-lsp.js`          | `aamkye/opencode-tools-lsp`          | Reactive LSP sidebar status panel.                                  |
 | `opencode-tools-todo.js`         | `aamkye/opencode-tools-todo`         | Synchronized session TODO sidebar panel immediately after LSP.      |
-| `session-rename.ts`              | `aamkye/session-rename`              | Manual global session rename command.                               |
 
 `solid-js`, `@opentui/*`, `@opencode-ai/plugin`, host SDK modules, and
 Node/Bun built-ins remain external and are provided by the OpenCode host.
-
-### Session rename plugin
-
-The global session rename plugin is manual-only. It changes a session title
-only when the command is invoked. Use `/session-rename Project planning notes`
-to set an explicit, validated 3-8 word title. Use `/session-rename` without a
-title to generate one from recent user text and the latest selected user model.
-The plugin adds success or failure feedback as an ignored message and disables
-OpenCode's built-in title agent.
-
-Build the plugin with `npm run build:session-rename`. Deploy it with
-`npm run deploy:global`; this installs `dist/session-rename.ts` as
-`~/.config/opencode/plugins/session-rename.ts`. Deployment installs the new file
-before it removes the previously managed legacy artifact. Fully restart OpenCode
-after deployment.
 
 ### Source files
 
@@ -877,10 +860,7 @@ after deployment.
 | `tui/services/subagent-snapshot.ts`     | Bounded direct-child snapshot loader                                                          |
 | `tui/services/subagent-source.ts`       | Event refresh, retry, stale-state, and failure persistence source                             |
 | `tui/providers/`                        | Z.AI, OpenAI, and OpenCode Go provider adapters                                               |
-| `lib/session-rename.ts`                 | Manual session rename command behavior                                                        |
-| `session-rename.ts`                     | Global manual session rename plugin entry point                                               |
 | `plugin-manifest.json`                  | Manifest order, runtime IDs, artifacts, slots, and option ownership                           |
-| `build-session-rename.mjs`              | Builds the bundled global session rename plugin                                               |
 | `build-plugins.mjs`                     | Builds the shared artifact and standalone local ESM plugins                                   |
 | `deploy-plugins.mjs`                    | Idempotently migrates local/global plugins and `tui.json` entries                             |
 

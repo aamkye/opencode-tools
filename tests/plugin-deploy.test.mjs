@@ -369,7 +369,7 @@ test("deployment retires managed token reports, preserves same-basename plugins,
     "./opencode-tools-home.js", "./opencode-tools-context.js", "./opencode-tools-ses-tokens.js",
     "./opencode-tools-subagent.js", "./opencode-tools-quota.js", "./opencode-tools-mcp.js",
   ]
-  const files = ["tui.json", "opencode.json", "opencode-tools-shared.js", "plugins/session-rename.ts", ...deployed.map((path) => path.slice(2))]
+  const files = ["tui.json", "opencode.json", "opencode-tools-shared.js", ...deployed.map((path) => path.slice(2))]
   let previous
   for (let attempt = 0; attempt < 2; attempt++) {
     await deployPlugins(target, { logLevel: "silent" })

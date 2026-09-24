@@ -11,7 +11,7 @@ test("documents OKF lookup instructions", () => {
   assert.match(agents, /okf lookup --type <Type>/)
 })
 
-test("indexes final session rename modules", () => {
+test("preserves the historical session rename knowledge index", () => {
   assert.match(summary, /session-rename\.ts/)
   assert.match(summary, /lib\/session-rename/)
   assert.equal(summary.includes("deploy-session-rename"), false)

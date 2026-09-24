@@ -21,8 +21,6 @@ test("publishes and typechecks the standalone plugins", () => {
   assert.deepEqual(pkg.files, ["dist", "plugin-manifest.json", "tui", "shared", "README.md"])
   assert.deepEqual(tsconfig.include, [
     "opencode-plugin-tui.d.ts",
-    "lib/session-rename.ts",
-    "session-rename.ts",
     "tui/**/*.ts",
     "tui/**/*.tsx",
     "shared/**/*.ts",
@@ -66,26 +64,25 @@ test("tracked project files contain no active legacy identifier", () => {
   }
 })
 
-test("retains the legacy session artifact name only for deployment cleanup", () => {
-  const legacySessionArtifact = ["session", "title"].join("-")
+test("retains retired session plugin names only for cleanup and historical assertions", () => {
+  const retiredIdentifiers = ["session-rename", "session-title"]
   const allowed = new Set([
     "deploy-plugins.mjs",
+    "plugin-manifest.mjs",
+    "tests/plugin-build.test.mjs",
+    "tests/plugin-wiring.test.mjs",
     "tests/session-rename-deploy.test.mjs",
+    "tests/okf-bundle.test.mjs",
   ])
   const trackedFiles = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
     .split("\0")
     .filter(Boolean)
-    .filter((file) => !file.startsWith("openspec/") && !file.startsWith("docs/superpowers/") && !file.startsWith("docs/comet/") && !file.startsWith("okf_bundle/"))
+    .filter((file) => !file.startsWith(".superpowers/") && !file.startsWith("openspec/") && !file.startsWith("docs/superpowers/") && !file.startsWith("docs/comet/") && !file.startsWith("okf_bundle/"))
     .filter((file) => existsSync(file))
 
   for (const file of trackedFiles) {
-    if (!readFileSync(file, "utf8").includes(legacySessionArtifact)) continue
+    if (!retiredIdentifiers.some((id) => readFileSync(file, "utf8").includes(id))) continue
     assert.equal(allowed.has(file), true, `${file} retains the obsolete session plugin name`)
-  }
-
-  const source = readFileSync("lib/session-rename.ts", "utf8")
-  for (const obsolete of ["TitleState", "TitleStage", "hasPriorParentMessages", "session.idle", "chat.message", "first message"]) {
-    assert.equal(source.includes(obsolete), false, `session rename source retains ${obsolete}`)
   }
 })
 
@@ -454,14 +451,12 @@ test("documents standalone installation, migration, sidebar layouts, and rollbac
 
   const buildAndDeploy = readme.match(/### Build and deploy\n\n([\s\S]*?)(?=\n#### Rollback)/u)?.[1]
   const rollback = readme.match(/#### Rollback\n\n([\s\S]*?)(?=\n### Artifact layout)/u)?.[1]
-  const artifactLayout = readme.match(/### Artifact layout\n\n([\s\S]*?)(?=\n### Session rename plugin)/u)?.[1]
-  const sessionRenameSection = readme.match(/### Session rename plugin\n\n([\s\S]*?)(?=\n### Source files)/u)?.[1]
+  const artifactLayout = readme.match(/### Artifact layout\n\n([\s\S]*?)(?=\n### Source files)/u)?.[1]
   const sourceFiles = readme.match(/### Source files\n\n([\s\S]*?)(?=\n### Edit workflow)/u)?.[1]
   const editWorkflow = readme.match(/### Edit workflow\n\n([\s\S]*?)(?=\n## Breaking migration)/u)?.[1]
   assert.ok(buildAndDeploy, "missing Build and deploy section")
   assert.ok(rollback, "missing Rollback section")
   assert.ok(artifactLayout, "missing Artifact layout section")
-  assert.ok(sessionRenameSection, "missing Session rename plugin section")
   assert.ok(sourceFiles, "missing Source files section")
   assert.ok(editWorkflow, "missing Edit workflow section")
   assert.match(buildAndDeploy, /Build the standalone minified ESM plugins/u)
@@ -523,35 +518,6 @@ test("documents standalone installation, migration, sidebar layouts, and rollbac
   assert.match(sesTokensFeatures, /up to two decimal places/u)
   assert.match(sesTokensFeatures, /trimmed zeroes/u)
   assert.match(sesTokensFeatures, /collapsed summary shows only the aggregate total/u)
-  assert.match(sessionRenameSection, /`\/session-rename Project planning notes`/u)
-  assert.match(
-    sessionRenameSection,
-    /`\/session-rename` without a\s+title to generate one from recent user text and the latest selected user model/u,
-  )
-  assert.match(sessionRenameSection, /manual-only/u)
-  assert.match(sessionRenameSection, /only when the command is invoked/u)
-  assert.match(sessionRenameSection, /success or failure feedback as an ignored message/u)
-  assert.match(sessionRenameSection, /disables\s+OpenCode's built-in title agent/u)
-  assert.match(sessionRenameSection, /`npm run build:session-rename`/u)
-  assert.match(sessionRenameSection, /`npm run deploy:global`/u)
-  assert.match(sessionRenameSection, /`dist\/session-rename\.ts`/u)
-  assert.match(sessionRenameSection, /`~\/\.config\/opencode\/plugins\/session-rename\.ts`/u)
-  assert.match(
-    sessionRenameSection,
-    /Deployment installs the new file\s+before it removes the previously managed legacy artifact/u,
-  )
-  assert.match(sessionRenameSection, /Fully restart OpenCode\s+after deployment/u)
-  assert.match(artifactLayout, /^└── session-rename\.ts$/mu)
-  assert.match(
-    artifactLayout,
-    /^\| `session-rename\.ts`\s+\| `aamkye\/session-rename`\s+\| Manual global session rename command\.\s+\|$/mu,
-  )
-  assert.match(sourceFiles, /^\| `lib\/session-rename\.ts`\s+\| Manual session rename command behavior\s+\|$/mu)
-  assert.match(sourceFiles, /^\| `session-rename\.ts`\s+\| Global manual session rename plugin entry point\s+\|$/mu)
-  assert.match(sourceFiles, /^\| `build-session-rename\.mjs`\s+\| Builds the bundled global session rename plugin\s+\|$/mu)
-  assert.equal(readme.includes(["session", "title"].join("-")), false)
-  assert.doesNotMatch(readme, /### Session title plugin/iu)
-  assert.doesNotMatch(readme, /first message|idle event|automatic rename/iu)
 
   assert.match(prose, /Long IDs truncate with an ellipsis so expanded lines fit within 37 cells and collapsed lines fit within 36 cells\./u)
   assert.match(prose, /TODO continuation lines align under the content column, and the collapsed summary rolls records into `done\/working\/todo` counts that exclude cancelled records\./u)

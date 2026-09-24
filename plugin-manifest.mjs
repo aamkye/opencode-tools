@@ -34,9 +34,13 @@ export const retiredPluginPaths = Object.freeze([
   "tui/token-report.tsx",
   "opencode-tools-token-report",
   "plugins/opencode-tools-token-report",
+  "session-rename.ts",
+  "plugins/session-rename.ts",
+  "plugins/session-title.ts",
 ])
 export const retiredPluginSpecs = Object.freeze([
   "aamkye/opencode-tools-token-report",
   "@aamkye/opencode-tools/token-report",
   "opencode-tools/token-report",
+  "aamkye/session-rename",
 ])

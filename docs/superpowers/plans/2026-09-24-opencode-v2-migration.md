@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Migrate the active codebase to OpenCode 2.0.16 on `feat/opencode-v2`, preserving the six retained UI features and manual session renaming.
+**Goal:** Migrate the active codebase to OpenCode 2.0.16 on `feat/opencode-v2`, preserving the six retained UI features and quota providers.
 
 **Architecture:** Use native V2 plugin definitions and the connected client's published types. Keep feature models and presentation helpers, introduce one paginated session source, and move authenticated quota requests into a server RPC companion. Deploy paired server/TUI packages through native server configuration.
 
@@ -11,8 +11,9 @@
 ## Global Constraints
 
 - The minimum supported host is OpenCode 2.0.16.
-- Retain Home, Context, SesTokens, SubAgent, Quota, MCP, and the server-side `/session-rename` command.
+- Retain Home, Context, SesTokens, SubAgent, Quota, and MCP.
 - Remove Token Reports, its commands, and report-only code per the user's subsequent request: "get rid of token reports".
+- Remove the session-rename command and server plugin per the user's subsequent request: "you can also remove session rename".
 - Retire the LSP panel and chip because V2 does not run LSP servers.
 - Retire the TODO panel and chip because V2 2.0.16 has no equivalent session TODO feed. Do not introduce plugin-owned task tools or storage.
 - Use the published V2 plugin and client types directly rather than maintaining a V1-shaped host compatibility layer.
@@ -25,7 +26,7 @@
 
 **Approved spec:** `docs/superpowers/specs/2026-09-24-opencode-v2-migration-design.md`, committed as `b6aaefa`.
 
-**Scope amendment:** After the initial Task 6 implementation, the user requested removal of Token Reports. The revised Task 6 below supersedes its original migration work. Tasks 1–5 remain completed; Tasks 8–9 use six retained UI packages and treat Token Reports as retired.
+**Scope amendments:** After the initial Task 6 implementation, the user requested removal of Token Reports. During Task 7 dispatch, the user also requested removal of session rename. The revised Tasks 6–7 below supersede their original migration requirements. Tasks 1–6 are completed; Tasks 8–9 use six retained UI packages plus the quota companion and verify both requested retirements.
 
 ## Contract facts and execution order
 
@@ -44,7 +45,6 @@ declare const client: OpenCodeClient
 const session: SessionInfo = await client.session.get({ sessionID: "ses_example" })
 const page = await client.message.list({ sessionID: session.id, order: "asc" })
 const messages: SessionMessageInfo[] = page.data
-await client.session.synthetic({ sessionID: session.id, text: "Invalid session title", resume: false })
 ```
 
 Native assistant messages use `type: "assistant"`, `model: { providerID, id, variant? }`, `content`, `tokens`, and `time`. Session events use `event.data`. Native theme values are RGBA tokens under `context.theme.text`, including `text.feedback.success.base`, `warning.base`, and `error.base`.
@@ -57,13 +57,13 @@ Execute tasks in order. During the API cutover, individual task tests are the ga
 | --- | --- |
 | `tui/runtime/plugin.ts`, new `tui/runtime/theme.ts` | Native setup/cleanup, shared-service identity, presentation theme projection |
 | `lib/session-source.ts` (new) | Authenticated V2 session/message pagination and cancellation |
-| `tui/features/*`, `tui/*.tsx` | Native input models and retained panels/chips/commands |
+| `tui/features/*`, `tui/*.tsx` | Native input models and retained panels/chips |
 | `tui/services/session-tree-snapshot.ts`, `subagent-snapshot.ts`, `ses-tokens-source.ts`, `subagent-source.ts` | Bounded snapshots, native refresh events, stale state and failure evidence |
 | `lib/quota/{types,openai,zai,opencode-go,credentials}.ts` (new) | Reused provider HTTP/parsing code and server-only connection resolution |
 | `shared/quota-rpc.ts`, `quota-service.ts` (new) | Validated quota RPC contract and native server registration |
 | `tui/services/quota-client.ts` (new), `quota-provider-hub.ts`, `tui/providers/*` | Location-scoped RPC transport, shared polling and presentation |
 | `tui/token-report.tsx`, `tui/features/token-report.ts`, report-only `lib/tokens/` files | Removed with Token Reports; preserve shared session pagination used by live panels |
-| `lib/session-rename.ts`, `session-rename.ts` | Native command execution and title ownership |
+| `lib/session-rename.ts`, `session-rename.ts`, dedicated rename build/deploy/compiler files | Removed with session rename; preserve existing user titles and title-agent settings |
 | `plugin-manifest.json`, `plugin-manifest.mjs`, build/deploy scripts | Ordered native packages, managed configuration migration and artifact cleanup |
 | Existing test files, new session-source/quota-RPC tests and V2 smoke script | Behavioral regression and real-host loading evidence |
 
@@ -93,7 +93,7 @@ npm uninstall @opencode-ai/plugin
 npm install --save-exact @opencode/plugin@2.0.16 @opencode/client@2.0.16 @opentui/core@0.5.10 @opentui/solid@0.5.10 zod@4.1.8
 ```
 
-Keep the existing Solid version unless npm reports a real peer incompatibility. Set `engines.opencode` to `>=2.0.16`. Zod is used directly for the RPC contract in Task 5. Remove the handwritten host declarations and their tsconfig inclusion; public host types must produce real compile errors. Include `lib/**/*.ts`, `quota-service.ts`, `session-rename.ts`, `tui/**/*.ts`, `tui/**/*.tsx`, `shared/**/*.ts` and native state/type fixtures in the final tsconfig so the server companion and new sources are checked too.
+Keep the existing Solid version unless npm reports a real peer incompatibility. Set `engines.opencode` to `>=2.0.16`. Zod is used directly for the RPC contract in Task 5. Remove the handwritten host declarations and their tsconfig inclusion; public host types must produce real compile errors. Include `lib/**/*.ts`, `quota-service.ts`, `tui/**/*.ts`, `tui/**/*.tsx`, `shared/**/*.ts` and native state/type fixtures in the final tsconfig so the server companion and new sources are checked too. The temporary `session-rename.ts` inclusion from completed Task 1 is removed in amended Task 7.
 
 - [ ] **Step 2: Update the runtime regression to exercise the native entry.** Replace the V1 lifecycle harness with direct setup/cleanup assertions. Keep rollback, async disposal, first-error and final-reference-release cases. Import runtime types directly in the contract fixture so it does not pull unfinished feature adapters into this task.
 
@@ -482,85 +482,44 @@ git diff --check
 
 Record pending session-rename diagnostics separately until Task 7. Commit the removal and this scope amendment with a Conventional Commit describing the intentional compatibility break. Do not commit ignored execution reports. Final full-suite/build/smoke gates still apply.
 
-### Task 7: Register native manual session renaming
+### Task 7: Remove session rename per user scope amendment
 
-**Files:** Modify `session-rename.ts`, `lib/session-rename.ts`, `tests/compile-session-rename.mjs`, `tests/session-rename.unit.test.mjs`, `tests/session-rename.lifecycle.test.mjs`, and rename artifact tests as needed for the native export.
+**Files:** Remove `session-rename.ts`, `lib/session-rename.ts`, `build-session-rename.mjs`, `deploy-session-rename.mjs`, `tests/compile-session-rename.mjs` and rename-only unit/lifecycle/artifact tests. Adapt the rename deployment test into retirement coverage. Modify `deploy-plugins.mjs`, `plugin-manifest.mjs`, `package.json`, `tsconfig.json`, README and affected aggregate build/deploy/wiring assertions. Keep historical design/OpenSpec/OKF records historical.
 
-**Interfaces:** Export `registerSessionRename(context: Plugin.Context): void` from `lib/session-rename.ts`; retain pure validation/normalization helper names. The root default export is native `Plugin.define` with ID `aamkye/session-rename`.
+**Interfaces:** No session-rename runtime API remains. Keep the six feature records and quota companion. Reuse the cleanup-only retired path/spec lists; keep `buildPlugins({ distRoot, logLevel, manifest })` output isolation and `deployPlugins(targetRoot, options)` defaults intact.
 
-- [ ] **Step 1: Replace the hook-object test harness with native registrations.** Capture `command.transform` and `session.hook("title", handler)` in the fixture; invoke the captured command with `{ sessionID, prompt: { text }, delivery: "queue" }`. Retain explicit-title validation cases and generation/update failures. Assert the native setup creates no temporary session and calls no `session.prompt`.
+- [ ] **Step 1: Establish a meaningful retirement regression.** In a temporary deployment root, seed the previously managed `plugins/session-rename.ts` and `plugins/session-title.ts`, known rename registrations, the old generated command definition, unrelated same-basename files outside the managed root, custom commands, explicit title-agent preferences and a sentinel representing user session data. Deployment must remove only managed rename remnants and be idempotent. Run the new test before removal and confirm the currently installed rename artifact causes failure.
 
 ```js
-await execute({ sessionID: "ses_root", prompt: { text: "Preserve manual session title" }, delivery: "queue" })
-assert.deepEqual(updates, [{ sessionID: "ses_root", title: "Preserve manual session title" }])
-assert.equal(generations.length, 0)
-assert.equal(createdSessions.length, 0)
+await deployPlugins(targetRoot, { logLevel: "silent" })
+assert.equal(existsSync(join(targetRoot, "plugins/session-rename.ts")), false)
+assert.equal(existsSync(join(targetRoot, "plugins/session-title.ts")), false)
+assert.equal(await readFile(outsideSameBasename, "utf8"), unrelatedContents)
+assert.equal(await readFile(sessionDataSentinel, "utf8"), originalSessionData)
 ```
 
-`execute`, `updates`, `generations`, and `createdSessions` are captured functions/arrays in the converted native context harness. Run rename tests before implementation and confirm the old hook contract fails.
+The fixture owns `targetRoot`, outside file, sentinel and expected contents. Verify preserved command/title settings by reading the resulting config, and compare all managed output bytes after a second deployment. Keep retirement build fixtures in their invocation-local temporary output root.
 
-- [ ] **Step 2: Port execution and title ownership.** Use `prompt.text` for explicit arguments. For generation, get the current session and its native context, select recent user text up to the existing 8K bound, and call `context.generate.text` with the current model/variant and the existing title instruction. Normalize/validate before updating.
+- [ ] **Step 2: Remove runtime and dedicated tooling.** Delete the command/title-hook implementation and root server plugin, stop building/copying/registering it, remove its npm build script and test compiler step, and remove its tsconfig inclusion. Remove feature-only tests and README advertising; adapt only related portions of aggregate tests. Audit remaining imports and dependencies before deletion. Keep native `session.renamed` refresh events used by retained panels; these are host events, not this plugin's command. Preserve the historical OKF bundle rather than rewriting past records.
 
-```ts
-context.command.transform((editor) => editor.add({
-  name: "session-rename",
-  description: "Rename the current session",
-  execute: async ({ sessionID, prompt }) => {
-    const feedback = async (text: string) => {
-      try { await context.session.synthetic({ sessionID, text, resume: false }) }
-      catch (error) { logWarning("feedback", sessionID, error) }
-    }
-    let title: string | undefined
-    if (prompt.text.trim()) {
-      title = normalizeTitle(prompt.text)
-      if (!title) { await feedback(describeInvalidTitle(prompt.text)); return }
-    } else {
-      try {
-        const session = await context.session.get({ sessionID })
-        if (!session.model) { await feedback("Unable to rename session: no model selected."); return }
-        const recent = collectRecentUserText(await context.session.context({ sessionID }))
-        if (!recent) { await feedback("Unable to rename session: no recent user context."); return }
-        const generated = await context.generate.text({
-          model: session.model,
-          prompt: `${TITLE_SYSTEM}\n\n${recent}`,
-        })
-        title = normalizeTitle(generated.text)
-        if (!title) { await feedback("Unable to rename session: generated title is invalid."); return }
-      } catch (error) {
-        logWarning("generate", sessionID, error)
-        await feedback("Unable to generate a session title.")
-        return
-      }
-    }
-    try { await context.session.update({ sessionID, title }) }
-    catch (error) {
-      logWarning("update", sessionID, error)
-      await feedback("Unable to update the session title.")
-    }
-  },
-}))
-context.session.hook("title", async (event) => {
-  event.result = (await context.session.get({ sessionID: event.sessionID })).title ?? "New session"
-})
-```
+Retirement may recognize the existing generated command `{ template: "/session-rename", description: "Rename this session; omit the title to generate one" }`. Preserve distinct user-defined commands and explicit title-agent settings instead of guessing their origin. Do not edit real OpenCode config or session data. Do not introduce a replacement rename UI, hook, or synthetic-message feature.
 
-Port `collectRecentUserText(messages: readonly SessionMessageInfo[], maxCharacters = 8_000): string | undefined` to filter `message.type === "user"` and use `message.text`, retaining its reverse traversal and character budget. Keep `TITLE_SYSTEM`, `normalizeTitle`, `describeInvalidTitle`, and `logWarning` from the existing module. Retain phase-specific diagnostics and remove the interception sentinel and temporary-child cleanup code. Test feedback-write rejection independently so it is not mislabeled as a generation failure.
-
-- [ ] **Step 3: Verify and commit.**
+- [ ] **Step 3: Verify and commit the scoped removal.**
 
 ```sh
-node tests/compile-session-rename.mjs
-node --test tests/session-rename.unit.test.mjs tests/session-rename.lifecycle.test.mjs
+npm run typecheck
+node tests/compile-presentation.mjs session-source context-model ses-tokens-model
+node --test tests/session-source.test.mjs tests/context-model.test.mjs tests/ses-tokens-model.test.mjs tests/plugin-manifest.test.mjs tests/session-rename-deploy.test.mjs
 git diff --check
 ```
 
-Expected: explicit/generated rename, preserved manual title and distinct failure paths pass without temporary sessions. Commit `refactor(rename): register native v2 session command`.
+Also run focused build retirement/isolation tests and audit active source/package/build/deploy/README references. Rename strings may remain only as explicit retirement inputs/tests; native rename event subscriptions and historical records are intentional. Record unrelated pending aggregate failures for Tasks 8–9. Commit `feat(rename)!: remove session rename` with a breaking-change explanation, including the amended spec/plan; keep execution scratch files uncommitted.
 
 ### Task 8: Build and deploy paired V2 packages safely
 
-**Files:** Modify `build-plugins.mjs`, `build-session-rename.mjs`, `deploy-plugins.mjs`, `plugin-manifest.json`, `plugin-manifest.mjs`, `tui/runtime/manifest.ts`, `package.json`; remove root `tui.json`. Update `tests/plugin-build.test.mjs`, `plugin-deploy.test.mjs`, `plugin-manifest.test.mjs`, `session-rename-artifact.test.mjs`, `session-rename-deploy.test.mjs`, `shared-boundary.test.mjs`, `plugin-wiring.test.mjs`.
+**Files:** Modify `build-plugins.mjs`, `deploy-plugins.mjs`, `plugin-manifest.json`, `plugin-manifest.mjs`, `tui/runtime/manifest.ts`, `package.json`; remove root `tui.json`. Update `tests/plugin-build.test.mjs`, `plugin-deploy.test.mjs`, `plugin-manifest.test.mjs`, `session-rename-deploy.test.mjs` retirement coverage, `shared-boundary.test.mjs`, `plugin-wiring.test.mjs`.
 
-**Interfaces:** Preserve `buildPlugins({ logLevel } = {})`, `buildSessionRename({ logLevel } = {})`, `deployPlugins(targetRoot, { logLevel = "info", projectConfigRoot } = {})` and `resolveGlobalConfigRoot()` public entrypoints. Keep the feature manifest's six ordered records; derive each package directory from its managed `opencode-tools-<key>` name. Quota-service and session-rename are explicit server companion build outputs.
+**Interfaces:** Preserve `buildPlugins({ distRoot, logLevel, manifest } = {})`, `deployPlugins(targetRoot, { logLevel = "info", projectConfigRoot } = {})` and `resolveGlobalConfigRoot()` public entrypoints. Keep the feature manifest's six ordered records; derive each package directory from its managed `opencode-tools-<key>` name. Quota-service is the only explicit server companion build output. Preserve the Task 6 private build-output isolation under concurrent tests.
 
 - [ ] **Step 1: Update artifact and temp-deployment expectations.** Assert each retained package has `package.json`, `index.js` and `tui.js`, with the original stable plugin ID. Verify both exports resolve, native server registrations include the independent quota companion, and no retired artifact is generated.
 
@@ -574,7 +533,7 @@ assert.equal(tuiPlugin.id, descriptor.id)
 
 Use existing temp-root helpers, with paths under the approved temp directory. Run artifact/deploy tests before changing build output; expect missing package-export/config assertions.
 
-- [ ] **Step 2: Build native package entrypoints.** Emit `dist/opencode-tools-<key>/{package.json,index.js,tui.js}`, `dist/opencode-tools-shared.js`, `dist/opencode-tools-quota-service/{package.json,index.js}` and `dist/session-rename/{package.json,index.js}`. UI-only server entrypoints are generated from the manifest:
+- [ ] **Step 2: Build native package entrypoints.** Emit `dist/opencode-tools-<key>/{package.json,index.js,tui.js}`, `dist/opencode-tools-shared.js`, and `dist/opencode-tools-quota-service/{package.json,index.js}`. UI-only server entrypoints are generated from the manifest:
 
 ```js
 import { Plugin } from "@opencode/plugin"
@@ -607,22 +566,20 @@ Here `text` and `configPath` are the selected existing config's contents/path; `
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     "./opencode-tools-quota-service",
-    { "package": "./opencode-tools-context", "options": { "defaultState": "collapsed" } },
-    "./session-rename"
+    { "package": "./opencode-tools-context", "options": { "defaultState": "collapsed" } }
   ]
 }
 ```
 
 This is a shape example; actual feature entries follow the complete manifest order. Deploy package directories beside the target `opencode.json(c)`, not into an auto-discovery directory that would double-load explicit registrations. Local target remains `<project>/.opencode`; global target remains the XDG-aware OpenCode config root. The quota-service registration is present independently of the Quota UI.
 
-Clean managed V1 registrations from `tui.json(c)` and existing `cli.json(c)` without moving unrelated CLI settings into server configuration. Do not create project-local `cli.json`. Remove only recognized managed LSP/TODO/Token Reports/legacy artifacts and obsolete token command entries from singular or plural command containers. Handle managed built-in disables only after verifying native plugin IDs. Preserve unrelated files, plugins and command definitions, including similarly named files outside the managed target. Write config after successful builds/copies; repeated deployment must produce identical files and registrations.
+Clean managed V1 registrations from `tui.json(c)` and existing `cli.json(c)` without moving unrelated CLI settings into server configuration. Do not create project-local `cli.json`. Remove only recognized managed LSP/TODO/Token Reports/session-rename/legacy artifacts and obsolete managed command entries from singular or plural command containers. Handle managed built-in disables only after verifying native plugin IDs. Preserve unrelated files, plugins, custom command definitions and explicit title-agent settings, including similarly named files outside the managed target. Write config after successful builds/copies; repeated deployment must produce identical files and registrations.
 
 - [ ] **Step 4: Verify packaging, migration preservation and idempotence.** Add temporary fixtures with JSONC comments, existing native entries, malformed config, unrelated matching basenames, retired plugins, custom quota options and all legacy precedence cases.
 
 ```sh
 npm run build
-npm run build:session-rename
-node --test tests/plugin-build.test.mjs tests/plugin-deploy.test.mjs tests/plugin-manifest.test.mjs tests/session-rename-artifact.test.mjs tests/session-rename-deploy.test.mjs tests/shared-boundary.test.mjs
+node --test tests/plugin-build.test.mjs tests/plugin-deploy.test.mjs tests/plugin-manifest.test.mjs tests/session-rename-deploy.test.mjs tests/shared-boundary.test.mjs
 git diff --check
 ```
 
@@ -634,9 +591,9 @@ Expected: complete packages and idempotent local/global migration preserving unr
 
 **Interfaces:** `npm run test:v2-smoke` runs `node tests/v2-plugin-smoke.mjs`. The script uses temporary XDG config/data/state/cache roots and the installed `opencode` 2.0.16 executable; it returns nonzero on failed loading and cleans up only its own process and temporary files.
 
-- [ ] **Step 1: Update the real-host smoke harness and current usage documentation.** Document the six retained features, V2 version floor, native package layout/options, local/global registration, global-only CLI settings, retired panels and Token Reports, and server-side quota credential resolution. Explain that existing V1 registrations are migration inputs, not valid new setup examples.
+- [ ] **Step 1: Update the real-host smoke harness and current usage documentation.** Document the six retained features, V2 version floor, native package layout/options, local/global registration, global-only CLI settings, retired panels/Token Reports/session rename, and server-side quota credential resolution. Explain that existing V1 registrations are migration inputs, not valid new setup examples.
 
-The installed 2.0.16 help confirms `opencode --standalone <directory>` for a private-server TUI and `opencode serve --hostname <host> --port <integer>` for an explicit API server. Use the private-server TUI under a PTY for the integration test, never the shared-service commands. Deploy the built packages into the smoke root and include a smoke-only paired probe plugin that records successful native server/CLI setup and cleanup into that root. Through the probe's native client, assert the six managed UI plugin IDs and `/session-rename` registration, call quota RPC with no credentials and expect `configured: false`, and verify invalid rename feedback does not start execution. Assert retired Token Reports IDs/commands are absent. Check sidebar/Home slot registration and absence of plugin-load errors, then terminate the PTY normally and inspect its cleanup receipt. Use a 30-second deadline and include captured startup errors on failure. Do not classify an import-only test as a real TUI load.
+The installed 2.0.16 help confirms `opencode --standalone <directory>` for a private-server TUI and `opencode serve --hostname <host> --port <integer>` for an explicit API server. Use the private-server TUI under a PTY for the integration test, never the shared-service commands. Deploy the built packages into the smoke root and include a smoke-only paired probe plugin that records successful native server/CLI setup and cleanup into that root. Through the probe's native client, assert the six managed UI plugin IDs and quota companion, call quota RPC with no credentials and expect `configured: false`, and assert retired Token Reports and session-rename IDs/commands are absent. Check sidebar/Home slot registration and absence of plugin-load errors, then terminate the PTY normally and inspect its cleanup receipt. Use a 30-second deadline and include captured startup errors on failure. Do not classify an import-only test as a real TUI load. Do not recreate removed command or synthetic-feedback features for the smoke test.
 
 ```js
 const root = await mkdtemp(join(approvedTempRoot, "opencode-tools-v2-"))
@@ -663,7 +620,6 @@ const args = ["--standalone", root, "--log-level", "debug", "--print-logs"]
 npm run typecheck
 npm test
 npm run build
-npm run build:session-rename
 npm run test:v2-smoke
 git diff --check
 ```
@@ -678,10 +634,11 @@ Commit the assembled migration/docs with a Conventional Commit that records the 
 feat(migration)!: require native opencode v2
 
 Complete the native plugin, client and deployment migration while retaining
-the supported panels, quota providers and manual session rename.
+the supported panels and quota providers.
 
 BREAKING CHANGE: requires OpenCode 2.0.16 or newer; use the native deployment
-layout and plugins configuration. LSP, TODO and Token Reports are retired.
+layout and plugins configuration. LSP, TODO, Token Reports and session rename
+are retired.
 ```
 
 Final response: branch and commits, retained functionality and approved retirements, exact verification results, and any unresolved host-level limitation. Do not merge or deploy into the user's live environment as part of verification.
@@ -691,6 +648,6 @@ Final response: branch and commits, retained functionality and approved retireme
 - Native APIs/types/lifetime and retired features: Tasks 1, 3, 4, 5, 6, 7.
 - Complete connected data/accounting/cancellation: Tasks 2, 4.
 - Quota credentials/RPC/consumer lifetime/remote location: Task 5.
-- Explicit/generated manual rename and title ownership: Task 7.
+- Session-rename retirement and managed cleanup: Task 7.
 - Native package exports/config preservation/idempotence: Task 8.
 - Layout, docs, real-host smoke and final acceptance: Task 9, with feature-specific tests in Tasks 3–6.

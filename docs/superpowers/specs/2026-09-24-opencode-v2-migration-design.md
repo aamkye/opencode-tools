@@ -7,10 +7,11 @@ Migrate the active codebase to native OpenCode V2 APIs on the separate
 
 The user approved these scope decisions:
 
-- Retain Home, Context, SesTokens, SubAgent, Quota, MCP, and the
-  server-side `/session-rename` command.
+- Retain Home, Context, SesTokens, SubAgent, Quota, and MCP.
 - Remove Token Reports, its commands, and report-only code per the user's
   subsequent request: "get rid of token reports".
+- Remove the session-rename command and server plugin per the user's subsequent
+  request: "you can also remove session rename".
 - Retire the LSP panel and chip because V2 does not run LSP servers.
 - Retire the TODO panel and chip because V2 2.0.16 has no equivalent session
   TODO feed. Do not introduce plugin-owned task tools or storage.
@@ -66,9 +67,9 @@ separate V2 plugin context objects.
 
 The retained panels and chips follow the existing 37-column layout rules,
 truncation, colors, separators, and collapse defaults. Session changes reset
-ephemeral disclosure state as before. Remove LSP/TODO and Token Reports source,
-exports, manifest records, fixtures, and current documentation that advertise
-those features.
+ephemeral disclosure state as before. Remove LSP/TODO, Token Reports, and session
+rename source, exports, registrations, fixtures, and current documentation that
+advertise those features.
 
 ## Connected session data
 
@@ -112,18 +113,18 @@ respect cancellation and must not leave pollers running after their consumers
 are disposed. Verify that remote-server requests use the active location and
 that credentials remain on the server.
 
-## Session rename
+## Session rename retirement
 
-Replace the V1 config hook and command interception sentinel with native server
-command registration. Explicit titles retain the existing validation rules.
-An invocation without arguments uses the current session's recent user context
-and selected model to generate a title without creating a temporary child
-session. Use the published V2 generation and session-update APIs.
+Remove the session-rename server entrypoint, implementation, dedicated build and
+deployment scripts, compiler step, and feature-only tests. Stop registering the
+command, intercepting command execution, disabling the host title agent, or
+owning automatic titles. No replacement title customization is introduced.
 
-Preserve manual title ownership through the native title hook. Validation or
-generation failure leaves the existing title intact. User-visible feedback uses
-non-executing synthetic messages where appropriate. Generation and update
-failures remain distinguishable in diagnostics.
+Deployment removes recognized managed rename registrations and legacy artifacts,
+including the formerly installed session-rename and session-title plugin files.
+Clean recognized managed command definitions while preserving unrelated custom
+commands and explicit user title-agent settings. Existing session titles and
+host data are preserved. Current documentation no longer advertises the command.
 
 ## Build and deployment
 
@@ -135,17 +136,16 @@ rewrite unless the actual V2 loader requires it.
 Project-local deployment uses server-registered packages with a `./tui` export
 so V2 discovers their UI entrypoints. UI-only features use a minimal server
 entrypoint for this pairing. Global deployment uses the same package structure.
-Install the shared quota companion and session-rename server plugin alongside
-the managed feature packages.
+Install the shared quota companion alongside the managed feature packages.
 
 Use native `plugins` entries, with `{ package, options }` when options exist,
 in the appropriate server configuration. Global terminal preferences belong in
 `cli.json`; do not generate a project-local CLI configuration. Migrate managed
 V1 registrations and options from existing deployment inputs, including legacy
 tuples and paths. Preserve unrelated configuration and plugin entries. Remove
-managed stale registrations and artifacts for retired LSP/TODO and Token Reports
-features, including obsolete token-command definitions. Repeated deployment must
-be idempotent.
+managed stale registrations and artifacts for retired LSP/TODO, Token Reports,
+and session rename, including obsolete managed command definitions. Repeated
+deployment must be idempotent.
 
 Translate managed built-in-panel disable settings only where a verified V2
 plugin ID exists; document any required manual setting rather than inventing
@@ -159,7 +159,7 @@ feature/presentation tests and replace tests tied solely to retired APIs.
 
 Required regression coverage includes:
 
-1. Native setup, slot and command registration, disposal, and shared-service
+1. Native setup, slot and RPC registration, disposal, and shared-service
    leases across distinct plugin contexts.
 2. Multi-page sessions and messages, nested trees, accounting, cancellation,
    bounded concurrency, missing sessions, and failed refresh retention.
@@ -169,8 +169,9 @@ Required regression coverage includes:
 4. Native MCP/model/status mapping, collapse resets, and 37-column rendering.
 5. Quota connection resolution, RPC result shape, provider failures, and unload
    cleanup without exposing resolved credentials.
-6. Explicit/generated renames, title ownership, validation failures, and model
-   or update failures without temporary sessions.
+6. Session rename is absent from active commands, server registrations, build
+   outputs and current usage documentation. Managed cleanup preserves unrelated
+   files, custom commands, title-agent preferences and existing session data.
 7. Local/global deployment in temporary roots, preserved options and unrelated
    settings, stale managed cleanup, package exports, and idempotence.
 
@@ -195,5 +196,5 @@ branch, retired features, verification results, and any remaining limitation.
 - [CLI configuration](https://opencode.ai/v2/docs/cli/config)
 
 Use the published 2.0.16 package types to resolve differences between examples
-and executable contracts, particularly session updates, client result envelopes,
-and synthetic-message execution behavior.
+and executable contracts, particularly client result envelopes, native event
+payloads, plugin lifecycle and RPC behavior.

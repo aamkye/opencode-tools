@@ -21,7 +21,6 @@
   "include": [
     "lib/**/*.ts",
     "quota-service.ts",
-    "session-rename.ts",
     "tui/**/*.ts",
     "tui/**/*.tsx",
     "shared/**/*.ts",

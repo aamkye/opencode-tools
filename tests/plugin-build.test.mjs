@@ -23,6 +23,9 @@ const retiredPaths = [
   "tui/token-report.tsx",
   "opencode-tools-token-report",
   "plugins/opencode-tools-token-report",
+  "session-rename.ts",
+  "plugins/session-rename.ts",
+  "plugins/session-title.ts",
 ]
 const expectedArtifacts = [
   sharedArtifact,
@@ -160,7 +163,7 @@ before(async () => {
       await writeFile(resolve(target, "package.json"), "{}\n")
     } else {
       await mkdir(resolve(target, ".."), { recursive: true })
-      await writeFile(target, "stale report artifact\n")
+      await writeFile(target, "stale retired artifact\n")
     }
   }
   buildResults = await buildPlugins({ logLevel: "silent", distRoot: resolve(buildRoot, "dist") })
@@ -192,7 +195,7 @@ test("build:plugins emits the manifest artifact layout and return shape", async 
   assert.equal(existsSync(resolve(buildRoot, "dist/plugins/opencode-tools-tokens.js")), false)
 })
 
-test("build removes retired managed report outputs", () => {
+test("build removes retired managed report and rename outputs", () => {
   for (const path of retiredPaths) assert.equal(existsSync(resolve(buildRoot, "dist", path)), false, path)
 })
 

@@ -3,14 +3,11 @@ import { homedir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { buildPlugins } from "./build-plugins.mjs"
-import { buildSessionRename } from "./build-session-rename.mjs"
 import { pluginManifest, retiredPluginPaths, retiredPluginSpecs, validatePluginManifest } from "./plugin-manifest.mjs"
 
 const projectRoot = dirname(fileURLToPath(import.meta.url))
 const obsoleteNamespace = ["opencode", "quota"].join("-")
 const sharedArtifact = "opencode-tools-shared.js"
-const sessionRenameArtifact = "session-rename.ts"
-const legacySessionRenameArtifact = "session-title.ts"
 const quotaPlugin = pluginManifest.find((entry) => entry.options === "quota")
 
 const historicalManagedPaths = [
@@ -48,8 +45,12 @@ const managedTokenCommandIds = [
 
 const managedConfigPaths = [
   ...pluginManifest.flatMap((entry) => [entry.outfile, entry.source]),
-  ...retiredPluginPaths,
   ...historicalManagedPaths,
+  // Earlier report deployments also registered these beside project-root config.
+  "opencode-tools-token-report.js",
+  "tui/token-report.tsx",
+  "opencode-tools-token-report",
+  "plugins/opencode-tools-token-report",
 ]
 
 function entrySpec(entry) {
@@ -77,11 +78,17 @@ function managedConfigPath(spec, targetRoot) {
   return path && managedConfigPaths.find((candidate) => path === resolve(targetRoot, candidate))
 }
 
-function isManagedSpec(spec, targetRoot) {
+function isRetiredSpec(spec, configRoot, targetRoot = configRoot) {
+  const path = specPath(spec, configRoot)
+  return retiredPluginSpecs.includes(spec.toLowerCase().replace(/[?#].*$/, ""))
+    || (path !== undefined && retiredPluginPaths.some((candidate) => path === resolve(targetRoot, candidate)))
+}
+
+function isManagedSpec(spec, configRoot, targetRoot) {
   const normalized = spec.toLowerCase().replace(/[?#].*$/, "")
-  return retiredPluginSpecs.includes(normalized)
+  return isRetiredSpec(spec, configRoot, targetRoot)
     || /^(?:@aamkye\/)?opencode-(?:tools|quota)(?:\/.*)?$/.test(normalized)
-    || managedConfigPath(spec, targetRoot) !== undefined
+    || managedConfigPath(spec, configRoot) !== undefined
 }
 
 function optionsPriority(spec, targetRoot) {
@@ -112,10 +119,23 @@ async function readOpenCodeConfig(path) {
   }
 }
 
-function cleanManagedTokenCommands(config) {
+function cleanManagedOpenCodeConfig(config, configRoot, targetRoot = configRoot) {
+  if (Array.isArray(config.plugin)) {
+    config.plugin = config.plugin.filter((entry) => {
+      const spec = entrySpec(entry)
+      return !spec || !isRetiredSpec(spec, configRoot, targetRoot)
+    })
+  }
   if (!config.command || typeof config.command !== "object" || Array.isArray(config.command)) return
 
   for (const id of managedTokenCommandIds) delete config.command[id]
+  const rename = config.command["session-rename"]
+  // Only the exact generated definition is attributable to the retired plugin.
+  if (rename?.template === "/session-rename"
+    && rename.description === "Rename this session; omit the title to generate one"
+    && Object.keys(rename).length === 2) {
+    delete config.command["session-rename"]
+  }
   if (Object.keys(config.command).length === 0) delete config.command
 }
 
@@ -126,7 +146,7 @@ function specToOutfile(spec, configRoot) {
   return entry?.outfile
 }
 
-function cleanManagedEntries(config, configRoot) {
+function cleanManagedEntries(config, configRoot, targetRoot = configRoot) {
   const unrelated = []
   const optionsByOutfile = {}
   let options
@@ -135,7 +155,7 @@ function cleanManagedEntries(config, configRoot) {
 
   for (const entry of Array.isArray(config.plugin) ? config.plugin : []) {
     const spec = entrySpec(entry)
-    if (!spec || !isManagedSpec(spec, configRoot)) {
+    if (!spec || !isManagedSpec(spec, configRoot, targetRoot)) {
       unrelated.push(entry)
       continue
     }
@@ -177,13 +197,10 @@ export function resolveGlobalConfigRoot(env = process.env, home = homedir()) {
 export async function deployPlugins(targetRoot, { logLevel = "info", projectConfigRoot } = {}) {
   validatePluginManifest(pluginManifest)
   await buildPlugins({ logLevel })
-  await buildSessionRename({ logLevel })
-  await mkdir(join(targetRoot, "plugins"), { recursive: true })
+  await mkdir(targetRoot, { recursive: true })
 
   const artifacts = [sharedArtifact, ...pluginManifest.map((entry) => entry.outfile)]
   await Promise.all(artifacts.map((artifact) => copyBuiltArtifact(artifact, targetRoot)))
-  await copyBuiltArtifact(sessionRenameArtifact, join(targetRoot, "plugins"))
-  await rm(join(targetRoot, "plugins", legacySessionRenameArtifact), { force: true })
 
   await Promise.all(obsoleteFiles.map((file) => rm(join(targetRoot, file), { force: true })))
   await Promise.all(retiredPluginPaths.map((path) => rm(join(targetRoot, path), { recursive: true, force: true })))
@@ -197,7 +214,7 @@ export async function deployPlugins(targetRoot, { logLevel = "info", projectConf
     const projectConfigPath = join(projectConfigRoot, "tui.json")
     try {
       const projectConfig = await readTuiConfig(projectConfigPath)
-      const project = cleanManagedEntries(projectConfig, projectConfigRoot)
+      const project = cleanManagedEntries(projectConfig, projectConfigRoot, targetRoot)
       fallback = project
       if (project.removed) {
         projectConfig.plugin = project.unrelated
@@ -210,7 +227,7 @@ export async function deployPlugins(targetRoot, { logLevel = "info", projectConf
     const projectOpenCodeConfigPath = join(projectConfigRoot, "opencode.json")
     try {
       const projectOpenCodeConfig = JSON.parse(await readFile(projectOpenCodeConfigPath, "utf8"))
-      cleanManagedTokenCommands(projectOpenCodeConfig)
+      cleanManagedOpenCodeConfig(projectOpenCodeConfig, projectConfigRoot, targetRoot)
       await writeFile(projectOpenCodeConfigPath, `${JSON.stringify(projectOpenCodeConfig, null, 2)}\n`)
     } catch (error) {
       if (error?.code !== "ENOENT") throw error
@@ -236,7 +253,7 @@ export async function deployPlugins(targetRoot, { logLevel = "info", projectConf
 
   const openCodeConfigPath = join(targetRoot, "opencode.json")
   const openCodeConfig = await readOpenCodeConfig(openCodeConfigPath)
-  cleanManagedTokenCommands(openCodeConfig)
+  cleanManagedOpenCodeConfig(openCodeConfig, targetRoot)
   await writeFile(openCodeConfigPath, `${JSON.stringify(openCodeConfig, null, 2)}\n`)
 }
 
