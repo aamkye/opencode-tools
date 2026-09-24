@@ -241,3 +241,194 @@ Report: `.superpowers/sdd/2026-09-24-opencode-v2-migration/task-5-report.md`.
   and final full-project typecheck/test/build/V2 load-smoke gates remain assigned
   to later tasks. Task 8 must deploy the server companion independently of UI
   enablement. This report claims focused Task 5 verification only.
+
+## Fix round 1/5 — preserve stale Z.AI usage after invalid responses
+
+**Status: DONE.** Addressed the Important finding in `task-5-findings.md`.
+
+### Root cause and change
+
+The validated fetcher returns `invalid-response` for malformed JSON, invalid
+payloads, and unsuccessful envelopes. The polling engine's invalid-result branch
+invokes the provider callback directly; Z.AI had only its no-data transient
+fallback, so cached usage remained in memory while the panel became heuristic.
+
+Added an explicit Z.AI `onFetchInvalidResponse` callback: cached quota selects
+`stale`; without cached quota the existing rate-limited/heuristic fallback applies.
+The engine continues to own expiry against the last successful fetch. The RPC
+still returns its validated `invalid-response` classification.
+
+Changed files for this round:
+
+- `tui/providers/zai.ts`: two-line provider-specific invalid-response handler.
+- `tests/provider-zai.test.mjs`: six regressions covering malformed JSON, invalid
+  payload, unsuccessful envelope, both no-data fallback modes, and authentication
+  clearing. The cached-data cases also cover the exact stale-horizon boundary,
+  expiry, repeated invalid results, timer cleanup, and recovery.
+- `tests/quota-rpc.test.mjs`: extended envelope cases and output-schema validation
+  for invalid, authentication, and transient classifications.
+- This report: appended review/fix evidence.
+
+### RED — exact commands and observed output
+
+Before the production fix:
+
+```sh
+node tests/compile-presentation.mjs quota-rpc provider-zai provider-lifecycle
+```
+
+Exit 0; no output.
+
+```sh
+node --test tests/provider-zai.test.mjs tests/quota-rpc.test.mjs
+```
+
+Exit 1. Exact failure/summary excerpts:
+
+```text
+✖ retains cached Z.AI quota after malformed JSON until the stale horizon (2.373083ms)
+✖ retains cached Z.AI quota after invalid payload until the stale horizon (1.069334ms)
+✖ retains cached Z.AI quota after unsuccessful envelope until the stale horizon (0.617583ms)
+✔ malformed Z.AI responses without cached quota retain the estimated-reset fallback (0.719292ms)
+✔ malformed Z.AI responses without cached quota retain the rate-limit fallback (0.638209ms)
+✖ authentication errors clear Z.AI cached quota after a malformed response (0.588375ms)
+```
+
+All four failures reported this assertion (the authentication case fails at its
+preceding malformed-response transition):
+
+```text
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+
+  + 'unavailable'
+  - 'stale'
+```
+
+```text
+ℹ tests 47
+ℹ suites 0
+ℹ pass 43
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 193.980875
+```
+
+This reproduced the reported presentation regression through the real native
+RPC bridge, server dispatch, parser, polling engine, and adapter. Existing
+fallback and RPC classification tests passed before the fix.
+
+### GREEN — exact commands and output
+
+After the production fix:
+
+```sh
+node tests/compile-presentation.mjs quota-rpc provider-zai provider-lifecycle
+```
+
+Exit 0; no output.
+
+```sh
+node --test tests/provider-zai.test.mjs tests/quota-rpc.test.mjs
+```
+
+Exit 0; complete output:
+
+```text
+✔ maps ready Z.AI quota into semantic windows, values, and peak status (2.1405ms)
+✔ hides every Z.AI tool time-limit item when requested (0.121625ms)
+✔ inserts one blank display row between the tool reset and usage values (0.135584ms)
+✔ maps loading and unavailable Z.AI states without hiding the provider (0.073916ms)
+✔ reports reactive Z.AI configuration from credentials (7.436792ms)
+✔ retains Z.AI quota with Peak and stale header segments (0.188792ms)
+✔ uses idle timers for unused full windows and countdown timers for exhausted windows (0.102917ms)
+✔ marks reset-boundary windows expired and maps off-peak to the success theme key (0.108875ms)
+✔ composes stale Off-Peak and stale header segments exactly (0.088125ms)
+✔ exposes a framework-only provider adapter and semantic home summary (0.251875ms)
+✔ refreshes selected Z.AI quota when constructed outside a component owner (23.137542ms)
+✔ exposes reactive provider freshness alongside the compact Z.AI home summary (1.051625ms)
+✔ retains cached Z.AI quota after malformed JSON until the stale horizon (2.554667ms)
+✔ retains cached Z.AI quota after invalid payload until the stale horizon (1.239417ms)
+✔ retains cached Z.AI quota after unsuccessful envelope until the stale horizon (0.782542ms)
+✔ malformed Z.AI responses without cached quota retain the estimated-reset fallback (1.081959ms)
+✔ malformed Z.AI responses without cached quota retain the rate-limit fallback (0.674125ms)
+✔ authentication errors clear Z.AI cached quota after a malformed response (0.952041ms)
+✔ uses the default and custom provider polling intervals while keeping the one-second clock (0.489167ms)
+✔ uses a custom provider polling interval (0.482375ms)
+✔ skips repeated polling callbacks and preserves Z.AI state when a pending refresh resolves after dispose (0.737417ms)
+✔ preserves Z.AI state when a pending refresh rejects after dispose (0.469625ms)
+✔ suppresses expected Z.AI abort logs but diagnoses non-abort failures (0.607ms)
+✔ owns and clears a 20-second timeout when fetchZaiQuota receives no signal (0.321875ms)
+✔ replaces Z.AI credentials without publishing the old generation (1.949458ms)
+✔ retries a failed replacement credential at the default interval instead of retained exhausted backoff (0.8355ms)
+✔ does not carry a Z.AI reset boundary into a replacement generation (0.668292ms)
+✔ does not carry a retry-only Z.AI boundary into replacement credentials (0.7455ms)
+✔ aborts and clears the Z.AI request timeout immediately on dispose (0.617042ms)
+✔ schedules a quota refresh at the 5H reset boundary (0.367833ms)
+✔ queues one Z.AI reset-boundary refresh behind an older request (0.546459ms)
+✔ expires stale quota data after the stale window (0.355708ms)
+✔ uses a reset timestamp from session messages when quota data is unavailable (0.61675ms)
+✔ Z.AI baseline persistence mutates the current native draft without overwriting another instance's cycle (0.473459ms)
+✔ server uses native OAuth only for HTTP and returns validated secret-free usage (3.457916ms)
+✔ native OpenAI aliases resolve OAuth and Z.AI aliases resolve key credentials (1.388958ms)
+✔ missing and wrong native credential types are unconfigured without HTTP (0.399042ms)
+✔ malformed payloads and provider auth failures retain response classification (2.540583ms)
+✔ cancellation reaches HTTP and prevents late success (3.580834ms)
+✔ a connection switch during HTTP cannot return the old account's usage (0.4005ms)
+✔ resolver and transport errors never expose credentials in results or logs (0.253667ms)
+✔ RPC schemas reject malformed provider data and arbitrary request fields (0.588167ms)
+✔ native companion registers independently and aborts outstanding work on cleanup (0.597542ms)
+✔ quota client forwards explicit remote and live default locations plus cancellation (0.147125ms)
+✔ Go accepts explicit workspace configuration server-side without echoing its token (1.198375ms)
+✔ native environment key connections and fresh credential resolution work on each request (0.25ms)
+✔ Z.AI retains numeric normalization, weekly absolute quotas, and tool detail parsing (0.326458ms)
+ℹ tests 47
+ℹ suites 0
+ℹ pass 47
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 212.057542
+```
+
+Focused typecheck:
+
+```sh
+./node_modules/.bin/tsc --ignoreConfig --noEmit --target es2023 --module esnext --moduleResolution bundler --strict --skipLibCheck --esModuleInterop --types node tui/providers/zai.ts tests/quota-rpc.fixture.ts tests/provider-lifecycle.fixture.ts
+```
+
+Exit 0; no output.
+
+Whitespace check:
+
+```sh
+git diff --check
+```
+
+Exit 0; no output.
+
+### Self-review
+
+- Confirmed fresh graph generation `2026-09-24T12:45:15Z` and exact-path
+  `metadata_match` coverage for the fetcher, adapter, and engine. Read the full
+  relevant symbols and both excluded test files directly; traced the adapter's
+  engine call. The source confirms the missing invalid-result callback.
+- The callback prioritizes valid cached usage and preserves the existing
+  no-data rate-limit/estimated-reset modes. Tests assert visible quota bars,
+  stale header segments, reset epoch, compact summary, and Home visibility.
+- Failures do not renew the successful-fetch timestamp: the tests retain 75%
+  at exactly 600,000 ms, expire it at 600,001 ms, and verify subsequent invalid
+  responses cannot resurrect it. A later successful response recovers normally.
+- HTTP 403 clears cached data and its boundary timer. Existing credential
+  replacement, reset scheduling, backoff, timeout, disposal, and stale-expiry
+  regressions all pass in the same focused run.
+- RPC assertions still require `invalid-response` for malformed data and
+  unsuccessful envelopes and validate the returned schema. The production diff
+  is confined to the Z.AI callback, preserving the shared engine and other
+  providers' policies.
+- Test-only HTTP responses enter below the native RPC/server/adapter path;
+  expectations use literal 75%, reset epochs, and the required stale horizon.
+  No unresolved concern remains for this Important finding.

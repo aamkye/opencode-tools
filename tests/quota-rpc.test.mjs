@@ -69,14 +69,21 @@ test("malformed payloads and provider auth failures retain response classificati
   mockFetch(t, async () => response)
   for (const provider of ["openai", "zai"]) {
     const context = server(provider === "openai" ? oauth : { type: "key", key: "SECRET_TEST_KEY" }, provider)
-    for (const [body, status, kind] of [[{}, 200, "invalid-response"], [null, 200, "invalid-response"], [usage, 401, "authentication-required"], [usage, 403, "authentication-required"], [usage, 503, "transient-failure"]]) {
+    for (const [body, status, kind] of [
+      [{}, 200, "invalid-response"], [null, 200, "invalid-response"],
+      [{ code: 200 }, 200, "invalid-response"], [{ code: 500 }, 200, "invalid-response"],
+      [usage, 401, "authentication-required"], [usage, 403, "authentication-required"], [usage, 503, "transient-failure"],
+    ]) {
       response = Response.json(body, { status })
       const result = await fetchQuota(context, { provider }, signal())
       assert.equal(result.configured, true)
       assert.equal(result.result.kind, kind)
+      assert.equal((await QuotaRpc.methods.fetch.output["~standard"].validate(result)).issues, undefined)
     }
     response = new Response("{", { headers: { "content-type": "application/json" } })
-    assert.equal((await fetchQuota(context, { provider }, signal())).result.kind, "invalid-response")
+    const result = await fetchQuota(context, { provider }, signal())
+    assert.equal(result.result.kind, "invalid-response")
+    assert.equal((await QuotaRpc.methods.fetch.output["~standard"].validate(result)).issues, undefined)
   }
 })
 

@@ -230,6 +230,8 @@ export function createZaiProvider(api: Plugin.Context, options: QuotaProviderOpt
       onFetchSuccess: () => { setPhase("ready") },
       onFetchTransientFailure: () =>
         retryAfterEpoch() && retryAfterEpoch()! > Date.now() ? "rate-limited" : "heuristic",
+      onFetchInvalidResponse: () => quotaData() ? "stale"
+        : retryAfterEpoch() && retryAfterEpoch()! > Date.now() ? "rate-limited" : "heuristic",
       onStaleHorizon: (h) => {
         setQuotaState(null)
         h.clearScheduledRefresh()

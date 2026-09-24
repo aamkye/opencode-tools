@@ -403,6 +403,111 @@ test("exposes reactive provider freshness alongside the compact Z.AI home summar
   assert.equal(adapter.home(), null)
 })
 
+for (const [failure, invalidResponse] of [
+  ["malformed JSON", () => new Response("{", { headers: { "content-type": "application/json" } })],
+  ["invalid payload", () => Response.json({})],
+  ["unsuccessful envelope", () => Response.json({ code: 500 })],
+]) {
+  test(`retains cached Z.AI quota after ${failure} until the stale horizon`, async (t) => {
+    const clock = installFakeClock(now)
+    let malformed = false
+    const adapter = createTestAdapter(t, {
+      clock,
+      fetch: async () => malformed ? invalidResponse() : quotaResponse(),
+    })
+    await adapter.refresh()
+    assert.equal(adapter.freshness(), "ready")
+    assert.equal(item(adapter.panel(), "zai:5h").value, 75)
+
+    clock.advance(60_000)
+    malformed = true
+    await adapter.refresh()
+    assert.equal(adapter.freshness(), "stale")
+    assert.equal(item(adapter.panel(), "zai:5h").value, 75)
+    assert.equal(item(adapter.panel(), "zai:5h-reset").epoch, now + 3_600_000)
+    assert.deepEqual(item(adapter.panel(), "zai:header").detailSegments, [
+      { text: "Peak (3x)", status: "error" },
+      { text: " / ", status: "textMuted" },
+      { text: "stale", status: "warning" },
+    ])
+    assert.equal(adapter.quotaSummary().primaryPct, 75)
+    assert.equal(adapter.configured(), true)
+    assert.equal(adapter.home(), null)
+
+    const tick = clock.intervals.find((timer) => timer.active && timer.delay === 1_000)
+    assert.ok(tick)
+    clock.advance(9 * 60_000)
+    tick.callback()
+    await adapter.refresh()
+    assert.equal(adapter.freshness(), "stale")
+    assert.equal(item(adapter.panel(), "zai:5h").value, 75)
+
+    clock.advance(1)
+    tick.callback()
+    await adapter.refresh()
+    assert.equal(adapter.freshness(), "unavailable")
+    assert.equal(item(adapter.panel(), "zai:5h"), undefined)
+    assert.equal(item(adapter.panel(), "zai:header").title, "Z.AI (est)")
+    assert.equal(adapter.quotaSummary(), null)
+    assert.ok(clock.timeouts.every((timer) => !timer.active))
+
+    malformed = false
+    await adapter.refresh()
+    assert.equal(adapter.freshness(), "ready")
+    assert.equal(item(adapter.panel(), "zai:5h").value, 75)
+  })
+}
+
+for (const retryText of [null, "Rate limited; reset after 15m"]) {
+  test(`malformed Z.AI responses without cached quota retain the ${retryText ? "rate-limit" : "estimated-reset"} fallback`, async (t) => {
+    const clock = installFakeClock(now)
+    const host = createNativeQuotaHost({ zai: "test-key", messages: retryText ? [{
+      type: "assistant", id: "retry", time: { created: 0 }, agent: "build",
+      model: { providerID: "zai", id: "glm" }, content: [{ type: "text", text: retryText }],
+    }] : [] })
+    const adapter = createTestAdapter(t, { api: host.api, clock, fetch: async () => Response.json({}) })
+    adapter.setSessionID("session-1")
+    await adapter.refresh()
+
+    assert.equal(adapter.freshness(), "unavailable")
+    assert.equal(adapter.quotaSummary(), null)
+    assert.equal(adapter.home(), null)
+    if (retryText) {
+      assert.equal(item(adapter.panel(), "zai:header").detail, "Rate limited")
+      assert.equal(item(adapter.panel(), "zai:5h").value, 0)
+      assert.equal(item(adapter.panel(), "zai:5h-reset").epoch, now + 15 * 60_000)
+    } else {
+      assert.equal(item(adapter.panel(), "zai:header").title, "Z.AI (est)")
+      assert.equal(item(adapter.panel(), "zai:5h"), undefined)
+      assert.equal(item(adapter.panel(), "zai:5h-reset").label, "Estimated reset")
+    }
+  })
+}
+
+test("authentication errors clear Z.AI cached quota after a malformed response", async (t) => {
+  const clock = installFakeClock(now)
+  let response = () => quotaResponse()
+  const adapter = createTestAdapter(t, { clock, fetch: async () => response() })
+  await adapter.refresh()
+  response = () => Response.json({})
+  await adapter.refresh()
+  assert.equal(adapter.freshness(), "stale")
+
+  response = () => new Response(null, { status: 403 })
+  await adapter.refresh()
+  assert.equal(adapter.freshness(), "unavailable")
+  assert.equal(item(adapter.panel(), "zai:5h"), undefined)
+  assert.equal(item(adapter.panel(), "zai:header").detail, "No Z.AI account linked")
+  assert.equal(adapter.quotaSummary(), null)
+  assert.ok(clock.timeouts.every((timer) => !timer.active))
+
+  response = () => Response.json({})
+  await adapter.refresh()
+  assert.equal(adapter.freshness(), "unavailable")
+  assert.equal(adapter.quotaSummary(), null)
+  assert.equal(item(adapter.panel(), "zai:5h"), undefined)
+})
+
 test("uses the default and custom provider polling intervals while keeping the one-second clock", async (t) => {
   const defaultClock = installFakeClock(now)
   createTestAdapter(t, { clock: defaultClock, fetch: async () => quotaResponse() })
