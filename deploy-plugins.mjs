@@ -64,6 +64,9 @@ function managedSpec(spec, configRoot, targetRoot) {
     }
     if (at(configRoot, `${name}.js`) || at(targetRoot, `${name}.js`)) return { key: entry.key, priority: 0 }
     if (at(configRoot, entry.source) || at(targetRoot, entry.source)) return { key: entry.key, priority: 1 }
+    if ([`@aamkye/opencode-tools/${entry.key}`, `opencode-tools/${entry.key}`].includes(normalized)) {
+      return { key: entry.key, priority: 2 }
+    }
   }
   if ([quotaCompanion, `aamkye/${quotaCompanion}`].includes(normalized)
     || [quotaCompanion, `${quotaCompanion}/index.js`].some((candidate) => at(targetRoot, candidate))) {
@@ -90,24 +93,21 @@ async function readConfig(configPath, kind, root) {
   return { path: configPath, kind, root, config, original: text, text }
 }
 
-function edit(document, path, value) {
-  document.text = applyEdits(document.text, modify(document.text, path, value, {
-    formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
-  }))
-}
-
-function removeRegistration(document, field, index) {
-  const array = findNodeAtLocation(parseTree(document.text), [field])
-  const node = array.children[index]
+function removeConfigEntry(document, path) {
+  const value = findNodeAtLocation(parseTree(document.text), path)
+  const node = value.parent.type === "property" ? value.parent : value
+  const siblings = node.parent.children
+  const index = siblings.indexOf(node)
   const scanner = createScanner(document.text, true)
   scanner.setPosition(node.offset + node.length)
   let comma = scanner.scan() === SyntaxKind.CommaToken ? scanner.getTokenOffset() : undefined
   if (comma === undefined && index > 0) {
-    const previous = array.children[index - 1]
+    const previous = siblings[index - 1]
     scanner.setPosition(previous.offset + previous.length)
     if (scanner.scan() === SyntaxKind.CommaToken) comma = scanner.getTokenOffset()
   }
-  // Remove only the owned value and its separator, keeping all surrounding trivia.
+  // Remove only the owned value/property and separator, keeping surrounding trivia.
+  // Formatted object-property deletion can swallow the next property's comments.
   // jsonc-parser 3.3.1 modify(array, lastIndex, undefined) leaves an invalid final
   // character on arrays without a trailing comma; AST/scanner ranges avoid that bug.
   document.text = applyEdits(document.text, [
@@ -127,29 +127,27 @@ function cleanCommands(document) {
       && rename.description === "Rename this session; omit the title to generate one"
       && Object.keys(rename).length === 2) removed.push("session-rename")
     if (!removed.length) continue
-    if (removed.length === Object.keys(commands).length) edit(document, [field], undefined)
-    else for (const id of removed) edit(document, [field, id], undefined)
+    if (removed.length === Object.keys(commands).length) removeConfigEntry(document, [field])
+    else for (const id of removed) removeConfigEntry(document, [field, id])
   }
 }
 
 function collectOptions(documents, targetRoot) {
   const options = new Map()
   for (const document of documents) {
-    for (const field of ["plugins", "plugin"]) {
-      for (const entry of document.config[field] ?? []) {
-        const spec = entrySpec(entry)
-        const managed = spec && managedSpec(spec, document.root, targetRoot)
-        if (!managed?.key || !Number.isFinite(managed.priority)) continue
-        const value = Array.isArray(entry) ? entry[1] : typeof entry === "object" ? entry.options : undefined
-        if (value === undefined && !managed.native) continue
-        // Native entries, then local-over-root, then artifact/source/package/legacy.
-        // A native string deliberately preserves the absence of options on a repeat run.
-        const priority = (managed.native ? 0 : 100)
-          + (document.root === targetRoot ? 0 : 10) + managed.priority
-          + (document.kind === "opencode" ? 0 : document.kind === "cli" ? 0.1 : 0.2)
-        if (!options.has(managed.key) || priority < options.get(managed.key).priority) {
-          options.set(managed.key, { value, priority })
-        }
+    for (const entry of document.config.plugins ?? document.config.plugin ?? []) {
+      const spec = entrySpec(entry)
+      const managed = spec && managedSpec(spec, document.root, targetRoot)
+      if (!managed?.key || !Number.isFinite(managed.priority)) continue
+      const value = Array.isArray(entry) ? entry[1] : typeof entry === "object" ? entry.options : undefined
+      if (value === undefined && !managed.native) continue
+      // Native entries, then local-over-root, then artifact/source/package/legacy.
+      // A native string deliberately preserves the absence of options on a repeat run.
+      const priority = (managed.native ? 0 : 100)
+        + (document.root === targetRoot ? 0 : 10) + managed.priority
+        + (document.kind === "opencode" ? 0 : document.kind === "cli" ? 0.1 : 0.2)
+      if (!options.has(managed.key) || priority < options.get(managed.key).priority) {
+        options.set(managed.key, { value, priority })
       }
     }
   }
@@ -166,9 +164,9 @@ function cleanRegistrations(document, targetRoot, managedEntries = []) {
     const append = field === "plugins" ? managedEntries : []
     const unrelated = entries.filter((_entry, index) => !owned[index])
     const carried = []
-    // Native plugins take precedence over the singular field in V2. Keep its
-    // original entries intact, but carry effective unrelated registrations forward.
-    if (append.length) {
+    // A native array, even when empty, already overrides the singular field in V2.
+    // Carry unrelated legacy registrations only when creating the native field.
+    if (append.length && document.config.plugins === undefined) {
       const nativeSpecs = new Set(entries.map(entrySpec))
       for (const entry of document.config.plugin ?? []) {
         const spec = entrySpec(entry)
@@ -180,11 +178,12 @@ function cleanRegistrations(document, targetRoot, managedEntries = []) {
     const next = [...unrelated, ...carried, ...append]
     if (isDeepStrictEqual(entries, next)) continue
     if (document.config[field] === undefined) {
-      edit(document, [field], next)
+      // Formatting a new property can also rewrite neighboring, unrelated settings.
+      document.text = applyEdits(document.text, modify(document.text, [field], next, {}))
       continue
     }
     for (let index = entries.length - 1; index >= 0; index--) {
-      if (owned[index]) removeRegistration(document, field, index)
+      if (owned[index]) removeConfigEntry(document, [field, index])
     }
     for (const entry of [...carried, ...append]) {
       // Formatting an insertion can reformat the previous, unrelated entry too.

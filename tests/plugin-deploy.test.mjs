@@ -242,18 +242,81 @@ test("fresh deployment registers the independent quota service and creates only 
   assert.equal(resolveGlobalConfigRoot({ XDG_CONFIG_HOME: " " }, "/fixture/home"), "/fixture/home/.config/opencode")
 })
 
-test("native server registrations keep legacy unrelated plugins effective without rewriting their entries", async (t) => {
-  const root = await fixture(t)
-  const legacy = ["@scope/plain", ["@scope/options", { enabled: true }], ["@scope/native-wins", { old: true }]]
-  const native = { package: "@scope/native-wins", options: { current: true } }
-  await put(root, "opencode.json", { plugin: legacy, plugins: [native, ["./opencode-tools-quota.js", localOptions]] })
-  await deployPlugins(root, { logLevel: "silent" })
-  assert.deepEqual((await config(root)).plugin, legacy)
-  assert.deepEqual((await config(root)).plugins, [native, "@scope/plain", { package: "@scope/options", options: { enabled: true } }, ...managedEntries(localOptions)])
-  const first = await snapshot(root)
-  await deployPlugins(root, { logLevel: "silent" })
-  assert.deepEqual(await snapshot(root), first)
-})
+for (const native of [undefined, [], [{ package: "@scope/native-wins", options: { current: true } }]]) {
+  for (const nativeFirst of native === undefined ? [false] : [false, true]) {
+    const label = native === undefined ? "legacy-only" : native.length === 0 ? "empty native" : "nonempty native"
+    test(`server field precedence: ${label}, native key ${nativeFirst ? "first" : "last"}`, async (t) => {
+      const root = await fixture(t)
+      const legacy = ["@scope/plain", ["@scope/options", { enabled: true }], ["@scope/native-wins", { old: true }]]
+      const legacyField = { plugin: [...legacy, ["./opencode-tools-quota.js", localOptions]] }
+      const nativeField = native === undefined ? {} : { plugins: native }
+      await put(root, "opencode.json", nativeFirst ? { ...nativeField, ...legacyField } : { ...legacyField, ...nativeField })
+      await deployPlugins(root, { logLevel: "silent" })
+      assert.deepEqual((await config(root)).plugin, legacy)
+      assert.deepEqual((await config(root)).plugins, native === undefined
+        ? ["@scope/plain", { package: "@scope/options", options: { enabled: true } }, { package: "@scope/native-wins", options: { old: true } }, ...managedEntries(localOptions)]
+        : [...native, ...managedEntries()])
+      const first = await snapshot(root)
+      await deployPlugins(root, { logLevel: "silent" })
+      assert.deepEqual(await snapshot(root), first)
+    })
+  }
+}
+
+for (const field of ["command", "commands"]) {
+  for (const existingPlugins of [true, false]) {
+    test(`JSONC ${field} deletion preserves adjacent text when ${existingPlugins ? "updating" : "creating"} native config`, async (t) => {
+      const root = await fixture(t)
+      const keep = '    // Keep command documentation\n    /* Keep block comment */\n    "keep"  : { "template" : "unchanged", "description": "custom spacing" }'
+      const preferences = '  // Keep agent documentation\n  "agents" : { "title" : { "disabled" : false } }'
+      const plugins = existingPlugins ? '  "plugins": [],\n' : ""
+      await put(root, "opencode.jsonc", `{
+${plugins}  "${field}": {
+    "tokens_today": { "template": "/tokens_today" },
+${keep}
+  },
+${preferences}
+}\n`)
+      await deployPlugins(root, { logLevel: "silent" })
+      const text = await readFile(join(root, "opencode.jsonc"), "utf8")
+      assert.ok(text.includes(keep), text)
+      assert.ok(text.includes(preferences), text)
+      assert.deepEqual((await config(root, "opencode.jsonc"))[field], { keep: { template: "unchanged", description: "custom spacing" } })
+      const first = await snapshot(root)
+      await deployPlugins(root, { logLevel: "silent" })
+      assert.deepEqual(await snapshot(root), first)
+    })
+  }
+}
+
+for (const [prefix, field, objectForm] of [["@aamkye/opencode-tools", "plugin", false], ["opencode-tools", "plugins", true]]) {
+  test(`feature package subpaths keep each feature's options: ${prefix}`, async (t) => {
+    const root = await fixture(t)
+    const featureOptions = [
+      ["home", { ignored: "Home has no options" }],
+      ["context", { defaultState: "collapsed" }],
+      ["ses-tokens", { defaultState: "expanded", chip: false }],
+      ["subagent", { defaultState: "semi-collapsed" }],
+      ["quota", localOptions],
+      ["mcp", { defaultState: "collapsed", chip: false }],
+    ]
+    await put(root, "tui.json", { [field]: featureOptions.map(([key, options]) => {
+      const spec = `${prefix}/${key}?version=1`
+      return objectForm ? { package: spec, options } : [spec, options]
+    }) })
+    await deployPlugins(root, { logLevel: "silent" })
+    assert.deepEqual((await config(root)).plugins, managedEntries(localOptions, {
+      "./opencode-tools-context": { defaultState: "collapsed" },
+      "./opencode-tools-ses-tokens": { defaultState: "expanded", chip: false },
+      "./opencode-tools-subagent": { defaultState: "semi-collapsed" },
+      "./opencode-tools-mcp": { defaultState: "collapsed", chip: false },
+    }))
+    assert.deepEqual((await config(root, "tui.json"))[field], [])
+    const first = await snapshot(root)
+    await deployPlugins(root, { logLevel: "silent" })
+    assert.deepEqual(await snapshot(root), first)
+  })
+}
 
 test("native root options outrank legacy local input and matching unmanaged root packages survive", async (t) => {
   const root = await fixture(t)

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { pathToFileURL } from "node:url"
 import test from "node:test"
+import { parse } from "jsonc-parser"
 
 import { deployPlugins } from "../deploy-plugins.mjs"
 
@@ -154,3 +155,32 @@ test("deployment removes the generated-only command without creating title prefe
   await deployPlugins(targetRoot, { logLevel: "silent" })
   assert.deepEqual(JSON.parse(await readFile(join(targetRoot, "opencode.json"), "utf8")), { plugins: deployedSpecs })
 })
+
+for (const field of ["command", "commands"]) {
+  for (const onlyGenerated of [false, true]) {
+    test(`JSONC rename ${onlyGenerated ? "container" : "entry"} deletion preserves adjacent text in ${field}`, async (t) => {
+      const { targetRoot } = await fixture(t)
+      const keep = '    // Keep this custom command note\n    "keep" : { "template" : "custom workflow" }'
+      const preferences = '  // Keep explicit title-agent settings\n  /* Keep adjacent block documentation */\n  "agents"  : { "title" : { "disabled": false, "model": "openai/custom" } }'
+      const commands = `  "${field}": {
+    "session-rename": ${JSON.stringify(generatedCommand)}${onlyGenerated ? "" : `,\n${keep}`}
+  }`
+      await writeFile(join(targetRoot, "opencode.jsonc"), onlyGenerated
+        ? `{\n${commands},\n${preferences},\n  "plugins": []\n}\n`
+        : `{\n  "plugins": [],\n${commands},\n${preferences}\n}\n`)
+      await deployPlugins(targetRoot, { logLevel: "silent" })
+      const text = await readFile(join(targetRoot, "opencode.jsonc"), "utf8")
+      assert.ok(text.includes(preferences), text)
+      if (!onlyGenerated) assert.ok(text.includes(keep), text)
+      const errors = []
+      const config = parse(text, errors, { allowTrailingComma: true })
+      assert.deepEqual(errors, [])
+      assert.deepEqual(config[field], onlyGenerated ? undefined : { keep: { template: "custom workflow" } })
+      assert.deepEqual(config.agents, { title: { disabled: false, model: "openai/custom" } })
+      assert.deepEqual(config.plugins, deployedSpecs)
+      const first = await snapshot(targetRoot)
+      await deployPlugins(targetRoot, { logLevel: "silent" })
+      assert.deepEqual(await snapshot(targetRoot), first)
+    })
+  }
+}
