@@ -1,4 +1,6 @@
 import { createSignal } from "solid-js/dist/solid.js"
+import type { Plugin } from "@opencode/plugin/tui"
+import type { SlotClaim } from "@opencode/plugin/tui/context"
 
 import {
   createComponent,
@@ -6,13 +8,10 @@ import {
   render,
   type HostNode,
 } from "./opentui-solid-host-runtime.fixture.js"
-import {
-  createSesTokensSource,
-  type SesTokensSourceDependencies,
-} from "../shared/opencode-tools-shared.js"
-import sesTokensPlugin, { sesTokensSourceTestKey } from "../tui/ses-tokens.js"
+import { defineTuiPlugin, pluginDescriptor } from "../shared/opencode-tools-shared.js"
+import { setupSesTokens } from "../tui/ses-tokens.js"
 
-type ClientResult<Data> = { data?: Data; error?: unknown }
+type ClientResult<Data> = { data?: Data; cursor?: { next?: string | null }; error?: unknown }
 type Timer = { callback: () => void; cancelled: boolean; delay: number }
 
 const LABELS = new Set([
@@ -36,14 +35,11 @@ function assistantMessage(sessionID: string, index: number, tokens: {
   return {
     id: `${sessionID}-message-${index}`,
     sessionID,
-    role: "assistant" as const,
+    type: "assistant" as const,
     time: { created: index, completed: index },
-    parentID: "",
-    modelID: "gpt",
-    providerID: "openai",
-    mode: "build",
+    model: { providerID: "openai", id: "gpt" },
+    content: [],
     agent: "build",
-    path: { cwd: "/repo", root: "/repo" },
     cost: 0,
     tokens,
     finish: "stop",
@@ -127,29 +123,27 @@ export async function mountSesTokensPanel(options: {
   defaultState?: unknown
   savedCollapsed?: boolean
   store?: Map<string, unknown>
+  slot?: "sidebar.content" | "prompt.footer.status"
+  chip?: "enabled" | "disabled"
 } = {}) {
   const store = options.store ?? new Map<string, unknown>()
   if (options.savedCollapsed !== undefined) store.set(COLLAPSED_KEY, options.savedCollapsed)
   const kvReads: string[] = []
   const kvWrites: Array<[string, unknown]> = []
-  const listCalls: Array<{ directory?: string }> = []
-  const messageCalls: Array<{ sessionID: string; directory?: string }> = []
+  const listCalls: unknown[] = []
+  const messageCalls: Array<{ sessionID: string; cursor?: string }> = []
+  const signals: AbortSignal[] = []
   const pendingLists: Array<(result: ClientResult<readonly unknown[]>) => void> = []
   const pendingMessages: Array<{
     sessionID: string
-    resolve(result: ClientResult<readonly { info: unknown }[]>): void
+    resolve(result: ClientResult<readonly unknown[]>): void
   }> = []
-  const handlers = new Map<string, (event: unknown) => void>()
+  const handlers = new Map<string, Set<(event: unknown) => void>>()
   const registrationCounts = new Map<string, number>()
   const unsubscribeCounts = new Map<string, number>()
   const timers: Timer[] = []
-  const registrations: Array<{
-    order?: number
-    slots: Record<string, (ctx: unknown, props: { session_id?: string }) => unknown>
-  }> = []
-  const controller = new AbortController()
-  let cleanups: Array<() => void | Promise<void>> = []
-  let sourceFactoryCallCount = 0
+  const registrations: SlotClaim[] = []
+  const disposedSlots: string[] = []
   let slotRenderCount = 0
 
   const scheduler = {
@@ -165,90 +159,74 @@ export async function mountSesTokensPanel(options: {
     },
   }
   const api = {
-    lifecycle: {
-      signal: controller.signal,
-      onDispose(cleanup: () => void | Promise<void>) {
-        cleanups.push(cleanup)
-        return () => { cleanups = cleanups.filter((candidate) => candidate !== cleanup) }
-      },
-    },
-    slots: { register: (registration: typeof registrations[number]) => registrations.push(registration) },
-    state: { path: { directory: "/repo" } },
+    options: { defaultState: options.defaultState, chip: options.chip },
+    ui: { slot(claim: SlotClaim) {
+      registrations.push(claim)
+      return () => { disposedSlots.push(claim.append ?? "") }
+    } },
     client: {
       session: {
-        list(input: { directory?: string }) {
+        list(input: unknown, request: { signal: AbortSignal }) {
           listCalls.push(input)
-          return new Promise<ClientResult<readonly unknown[]>>((resolve) => pendingLists.push(resolve))
+          signals.push(request.signal)
+          return new Promise((resolve, reject) => pendingLists.push((reply) => {
+            if (!reply.data || "error" in reply) reject(reply.error)
+            else resolve({ data: reply.data, cursor: reply.cursor ?? {} })
+          }))
         },
-        messages(input: { sessionID: string; directory?: string }) {
+      },
+      message: {
+        list(input: { sessionID: string; cursor?: string }, request: { signal: AbortSignal }) {
           messageCalls.push(input)
-          return new Promise<ClientResult<readonly { info: unknown }[]>>((resolve) => {
-            pendingMessages.push({ sessionID: input.sessionID, resolve })
+          signals.push(request.signal)
+          return new Promise((resolve, reject) => {
+            pendingMessages.push({ sessionID: input.sessionID, resolve(reply) {
+              if (!reply.data || "error" in reply) reject(reply.error)
+              else resolve({ data: reply.data, cursor: reply.cursor ?? {} })
+            } })
           })
         },
       },
     },
-    event: {
+    data: {
       on(type: string, handler: (event: unknown) => void) {
         registrationCounts.set(type, (registrationCounts.get(type) ?? 0) + 1)
-        if (handlers.has(type)) throw new Error(`${type} registered more than once`)
-        handlers.set(type, handler)
-        unsubscribeCounts.set(type, 0)
+        if (!handlers.has(type)) handlers.set(type, new Set())
+        handlers.get(type)!.add(handler)
         let unsubscribed = false
         return () => {
           if (unsubscribed) return
           unsubscribed = true
           unsubscribeCounts.set(type, (unsubscribeCounts.get(type) ?? 0) + 1)
-          if (handlers.get(type) === handler) handlers.delete(type)
+          handlers.get(type)?.delete(handler)
+          if (handlers.get(type)?.size === 0) handlers.delete(type)
         }
       },
     },
-    kv: {
-      get<T>(key: string, fallback: T): T {
-        kvReads.push(key)
-        return store.has(key) ? store.get(key) as T : fallback
-      },
-      set<T>(key: string, value: T) {
-        store.set(key, value)
-        kvWrites.push([key, value])
-      },
-    },
     theme: {
-      current: {
-        error: "#ff0000",
-        warning: "#ffaa00",
-        success: "#00ff00",
-        text: "#ffffff",
-        textMuted: "#888888",
+      text: {
+        base: "#ffffff", muted: "#888888",
+        feedback: { error: { base: "#ff0000" }, warning: { base: "#ffaa00" }, success: { base: "#00ff00" } },
       },
     },
   }
-  const meta = {
-    [sesTokensSourceTestKey]: (dependencies: SesTokensSourceDependencies) => {
-      sourceFactoryCallCount += 1
-      return createSesTokensSource({
-        ...dependencies,
-        setTimer: scheduler.setTimer,
-        clearTimer: scheduler.clearTimer,
-      })
-    },
-  }
-
-  await sesTokensPlugin.tui(api as never, { defaultState: options.defaultState }, meta)
-  const registration = registrations[0]
-  const slot = registration?.slots.sidebar_content
-  if (!registration || !slot) throw new Error("SesTokens sidebar slot was not registered")
+  const sesTokensPlugin = defineTuiPlugin(pluginDescriptor("ses-tokens"), (scope, api) => setupSesTokens(scope, api, scheduler))
+  const cleanup = await sesTokensPlugin.setup(api as unknown as Plugin.Context)
+  const slot = registrations.find((claim) => claim.append === (options.slot ?? "sidebar.content"))
+  if (!slot) throw new Error("SesTokens slot was not registered")
 
   const root = createHostNode("root")
   const [hostSessionID, setHostSessionID] = createSignal(options.sessionID ?? "")
   const slotProps = {
-    get session_id() {
+    mode: "normal" as const,
+    showDetails: true,
+    get sessionID() {
       return hostSessionID()
     },
   }
   const disposeHost = render(() => (() => {
     slotRenderCount += 1
-    return slot({}, slotProps)
+    return slot.render(slotProps)
   }) as never, root)
   const mountedPanels = new Map<HostNode, HostNode>()
   const disposedPanels = new Set<HostNode>()
@@ -273,9 +251,9 @@ export async function mountSesTokensPanel(options: {
 
   await flushHost()
 
-  function view(width = 37) {
-    const nodes = descendants(root)
-    const textNodes = mountedTextNodes(root)
+  function view(width = 37, viewRoot = root) {
+    const nodes = descendants(viewRoot)
+    const textNodes = mountedTextNodes(viewRoot)
     const title = textNodes.find((node) => textOf(node) === "SesTokens")
     const header = title?.parent
     const headerNodes = header ? descendants(header) : []
@@ -361,10 +339,8 @@ export async function mountSesTokensPanel(options: {
     messageCalls,
     panelMounts: () => mountedPanels.size,
     panelDisposals: () => disposedPanels.size,
-    sourceFactoryCalls: () => sourceFactoryCallCount,
     slotRenders: () => slotRenderCount,
-    lifecycleCleanups: () => cleanups.length,
-    lifecycleAborted: () => controller.signal.aborted,
+    signals, disposedSlots,
     registeredTypes: () => [...handlers.keys()],
     registrationCount: (type: string) => registrationCounts.get(type) ?? 0,
     unsubscribeCount: (type: string) => unsubscribeCounts.get(type) ?? 0,
@@ -374,8 +350,8 @@ export async function mountSesTokensPanel(options: {
       await flushHost()
       return sessionID ? currentPanel() : null
     },
-    emit(event: { type: string; properties: Record<string, unknown> }) {
-      handlers.get(event.type)?.(event)
+    emit(event: { type: string; data: Record<string, unknown> }) {
+      for (const handler of handlers.get(event.type) ?? []) handler(event)
     },
     async resolveList(result: ClientResult<readonly unknown[]> = { data: [{ id: options.sessionID ?? "session-a" }] }) {
       const resolve = pendingLists.shift()
@@ -385,7 +361,7 @@ export async function mountSesTokensPanel(options: {
     },
     async resolveMessages(
       sessionID: string,
-      result: ClientResult<readonly { info: unknown }[]> = { data: readyMessages.map((info) => ({ info })) },
+      result: ClientResult<readonly unknown[]> = { data: readyMessages },
     ) {
       const index = pendingMessages.findIndex((pending) => pending.sessionID === sessionID)
       if (index < 0) throw new Error(`No pending session.messages call for ${sessionID}`)
@@ -401,16 +377,24 @@ export async function mountSesTokensPanel(options: {
       await flushHost()
     },
     view,
+    chipText: () => textOf(root),
+    mountView(sessionID: string, path = "sidebar.content") {
+      const claim = registrations.find((claim) => claim.append === path)
+      if (!claim) throw new Error(`Missing ${path}`)
+      const extraRoot = createHostNode("root")
+      const [id, setID] = createSignal(sessionID)
+      const dispose = render(() => claim.render({ get sessionID() { return id() }, mode: "normal", showDetails: true }) as never, extraRoot)
+      return { view: () => view(37, extraRoot), text: () => textOf(extraRoot), setSessionID: setID, dispose }
+    },
+    unmount: disposeHost,
+    unload: cleanup,
     async dispose() {
       disposeHost()
       for (const mounted of mountedPanels.keys()) {
         mounted.removed = true
         disposedPanels.add(mounted)
       }
-      controller.abort()
-      const queue = cleanups.reverse()
-      cleanups = []
-      for (const cleanup of queue) await cleanup()
+      await cleanup?.()
     },
   }
 }

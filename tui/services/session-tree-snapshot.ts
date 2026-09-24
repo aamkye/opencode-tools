@@ -1,10 +1,10 @@
-import type { Message, Session } from "@opencode-ai/sdk/v2"
+import type { SessionMessageInfo, SessionInfo } from "@opencode/client"
 
-export type SessionTreeRecord = Pick<Session, "id" | "parentID">
+export type SessionTreeRecord = Pick<SessionInfo, "id" | "parentID">
 
 export type SessionTreeSnapshot = {
   sessionIDs: readonly string[]
-  messages: readonly Message[]
+  messages: readonly SessionMessageInfo[]
 }
 
 export type SessionTreeSnapshotLoadContext = {
@@ -19,8 +19,8 @@ export type SessionTreeSnapshotLoader = (
 
 export type LoadSessionTreeSnapshotOptions = {
   rootSessionID: string
-  listSessions(): Promise<readonly SessionTreeRecord[]>
-  listMessages(sessionID: string): Promise<readonly Message[]>
+  listSessions(signal: AbortSignal): Promise<readonly SessionTreeRecord[]>
+  listMessages(sessionID: string, signal: AbortSignal): Promise<readonly SessionMessageInfo[]>
   concurrency?: number
   signal?: AbortSignal
   onSessionIDs?(sessionIDs: readonly string[]): void
@@ -152,12 +152,12 @@ async function loadSessionTreeSnapshotWithLimiter(
   limitMessageRequest: MessageRequestLimiter,
 ): Promise<SessionTreeSnapshot> {
   throwIfAborted(options.signal)
-  const sessions = await options.listSessions()
+  const sessions = await options.listSessions(options.signal ?? new AbortController().signal)
   throwIfAborted(options.signal)
   const sessionIDs = collectSessionTreeIDs(options.rootSessionID, indexSessionsByParent(sessions))
   options.onSessionIDs?.(sessionIDs)
   throwIfAborted(options.signal)
-  const messagesBySession: (readonly Message[])[] = new Array(sessionIDs.length)
+  const messagesBySession: (readonly SessionMessageInfo[])[] = new Array(sessionIDs.length)
   const attemptController = new AbortController()
   const abortFromParent = () => attemptController.abort(
     options.signal ? abortReason(options.signal) : undefined,
@@ -175,7 +175,7 @@ async function loadSessionTreeSnapshotWithLimiter(
       try {
         messagesBySession[index] = await limitMessageRequest(
           signal,
-          () => options.listMessages(sessionIDs[index]),
+          () => options.listMessages(sessionIDs[index], signal),
         )
       } catch (error) {
         if (!failed && !options.signal?.aborted) {

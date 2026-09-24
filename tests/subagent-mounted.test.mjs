@@ -17,15 +17,13 @@ const {
 } = await import("../.tmp-test/subagent-mounted.mjs")
 
 const eventTypes = [
-  "session.created",
-  "session.updated",
-  "session.deleted",
-  "session.status",
-  "session.idle",
-  "session.error",
-  "message.updated",
-  "message.removed",
-  "tui.session.select",
+  "session.usage.updated", "session.step.ended", "session.step.failed",
+  "session.created", "session.forked", "session.deleted", "session.renamed",
+  "session.agent.selected", "session.model.selected",
+  "session.execution.started", "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
+  "session.status", "session.idle",
+  "session.revert.staged", "session.revert.cleared", "session.revert.committed",
+  "session.compaction.ended", "session.compaction.failed", "server.connected",
 ]
 
 const agentsSubagentSection = readFileSync(new URL("../AGENTS.md", import.meta.url), "utf8")
@@ -85,26 +83,22 @@ async function exhaustFailedLoad(mounted) {
   }
 }
 
-test("registers the SubAgent ID and session-scoped slot 120", async () => {
+test("registers native SubAgent sidebar and chip slots", async () => {
   const mounted = await mountSubagentPanel()
   assert.equal(mounted.pluginID, "aamkye/opencode-tools-subagent")
-  assert.equal(mounted.registrations.length, 1)
-  assert.equal(mounted.registrations[0].order, 120)
-  assert.deepEqual(Object.keys(mounted.registrations[0].slots), ["sidebar_content", "session_prompt_right"])
-  assert.equal(mounted.sourceFactoryCalls(), 1)
+  assert.deepEqual(mounted.registrations.map((claim) => claim.append), ["sidebar.content", "prompt.footer.status"])
   assert.deepEqual(mounted.registeredTypes(), eventTypes)
   assert.deepEqual(mounted.kvReads, [
     subagentFailureKey,
   ])
   assert.deepEqual(mounted.listCalls, [])
   await mounted.setParentID("parent-a")
-  assert.deepEqual(mounted.listCalls, [{ directory: "/repo" }])
+  assert.deepEqual(mounted.listCalls, [{ limit: 100, order: "asc" }])
   await mounted.resolveList({})
   assert.deepEqual(mounted.pendingDelays(), [2_000])
   for (const type of eventTypes) assert.equal(mounted.registrationCount(type), 1)
   await mounted.dispose()
-  assert.equal(mounted.lifecycleAborted(), true)
-  assert.equal(mounted.lifecycleCleanups(), 0)
+  assert.deepEqual(mounted.disposedSlots, ["prompt.footer.status", "sidebar.content"])
   assert.deepEqual(mounted.registeredTypes(), [])
   assert.deepEqual(mounted.pendingDelays(), [])
   for (const type of eventTypes) assert.equal(mounted.unsubscribeCount(type), 1)
@@ -152,9 +146,9 @@ test("renders muted No subagents for a complete empty snapshot", async () => {
     ])
     mounted.emit({
       type: "session.created",
-      properties: {
+      data: {
         sessionID: "subagent-new",
-        info: { id: "subagent-new", parentID: "parent-a" },
+        parentID: "parent-a",
       },
     })
     assert.equal(mounted.view().detailText, "")
@@ -215,7 +209,7 @@ test("matches the full wrapping expanded-title AGENTS layout without a duration 
           title,
           time: { ...entry.session.time, created: 20_000_000 - (9 * 60_000 + 45_000) },
         },
-        status: { type: "busy" },
+        status: "running",
       }
     : entry)
   const expectedLayout = oneDetailWrappingLayout.map((line, index) => {
@@ -319,10 +313,10 @@ test("keeps the ready body through a successful background refresh", async () =>
   try {
     await mounted.resolveReady()
     mounted.emit({
-      type: "session.updated",
-      properties: {
+      type: "session.renamed",
+      data: {
         sessionID: "subagent-9",
-        info: { id: "subagent-9", parentID: "parent-a" },
+        title: "SubAgent9",
       },
     })
     assert.equal(mounted.view().detailText, "")
@@ -343,10 +337,10 @@ test("publishes stale only after background retries are exhausted", async () => 
   try {
     await mounted.resolveReady()
     mounted.emit({
-      type: "session.updated",
-      properties: {
+      type: "session.renamed",
+      data: {
         sessionID: "subagent-9",
-        info: { id: "subagent-9", parentID: "parent-a" },
+        title: "SubAgent9",
       },
     })
     assert.equal(mounted.view().detailText, "")
@@ -414,7 +408,7 @@ test("clips long detail identities to one row at 37 and 35 cells", async () => {
     messages: running.messages.map((entry) => ({
       ...entry,
       agent: longAgent,
-      modelID: longModel,
+      model: { providerID: "openai", id: longModel },
     })),
   }
   const mounted = await mountSubagentPanel({ parentID: "parent-a" })
@@ -467,7 +461,7 @@ test("reserves the fixed duration box while flexing end-truncated titles", async
       title: "SubAgent11 with super long name",
       time: {
         ...first.session.time,
-        updated: first.session.time.created + 235_000,
+        idle: first.session.time.created + 235_000,
       },
     },
     messages: [
@@ -564,7 +558,7 @@ test("measures wide and combining titles in terminal cells", async () => {
   }
 })
 
-test("rejects defined falsy list and message envelope errors", async () => {
+test("retries rejected native list and message requests even with falsy reasons", async () => {
   const listFailure = await mountSubagentPanel({ parentID: "parent-a" })
   try {
     await listFailure.resolveList({ data: [], error: false })
@@ -635,7 +629,7 @@ test("Open Session navigates to the selected child route", async () => {
     await mounted.resolveReady([navigationChild])
     await mounted.view().clickEntry("SubAgent9")
     await mounted.view().activateOpenSession()
-    assert.deepEqual(mounted.routeCalls, [["session", { sessionID: "child-9" }]])
+    assert.deepEqual(mounted.routeCalls, [{ type: "session", sessionID: "child-9" }])
   } finally {
     await mounted.dispose()
   }
@@ -753,8 +747,8 @@ test("collapse parent switch completion and disposal stop the clock", async () =
   try {
     await completed.resolveReady()
     completed.emit({
-      type: "session.updated",
-      properties: { sessionID: "subagent-9", info: { id: "subagent-9", parentID: "parent-a" } },
+      type: "session.execution.succeeded",
+      data: { sessionID: "subagent-9" },
     })
     await completed.runTimer(200)
     await completed.resolveReady(terminalChildren)
@@ -770,6 +764,123 @@ test("collapse parent switch completion and disposal stop the clock", async () =
   await disposed.resize(34)
   assert.equal(disposed.intervalClears(), 1)
   assert.deepEqual(disposed.activeIntervalDelays(), [])
+})
+
+test("keeps mounted parents, disclosures and clocks independent; chip loads without sidebar", async () => {
+  const mounted = await mountSubagentPanel({ parentID: "parent-a" })
+  let other
+  try {
+    await mounted.resolveReady()
+    await mounted.view().clickEntry("SubAgent9")
+    other = mounted.mountView("parent-b", ["B child"])
+    const child = { ...canonicalChildren[2].session, id: "b-child", parentID: "parent-b", title: "B child" }
+    await mounted.resolveList({ data: [child] })
+    await mounted.resolveMessages("b-child", { data: canonicalChildren[2].messages })
+    assert.equal(other.view().entryRows[0].title, "B child")
+    assert.equal(mounted.view().detailRows[1].value, "running")
+    assert.deepEqual(mounted.activeIntervalDelays(), [1_000, 1_000])
+    await other.view().clickHeader()
+    assert.equal(mounted.view().marker, "▼ ")
+    assert.deepEqual(mounted.activeIntervalDelays(), [1_000])
+    mounted.unmount()
+    assert.deepEqual(mounted.activeIntervalDelays(), [])
+    assert.equal(mounted.unsubscribeCount("session.usage.updated"), 1)
+    await mounted.unload()
+    assert.deepEqual(mounted.registeredTypes(), [])
+    assert.equal(mounted.unsubscribeCount("session.usage.updated"), 2)
+  } finally { other?.dispose(); await mounted.dispose() }
+
+  const chip = await mountSubagentPanel({ parentID: "parent-a", slot: "prompt.footer.status" })
+  try {
+    await chip.resolveReady()
+    assert.match(chip.chipText(), /Sub.*7\/1\/3/)
+    assert.deepEqual(chip.activeIntervalDelays(), [])
+  } finally { await chip.dispose() }
+})
+
+test("shares the four message slots across mounted parents and cancels queued views", async () => {
+  const mounted = await mountSubagentPanel({ parentID: "parent-a" })
+  let other
+  try {
+    await mounted.resolveList({ data: canonicalChildren.map(({ session }) => session) })
+    other = mounted.mountView("parent-b")
+    await mounted.resolveList({ data: [{ ...canonicalChildren[0].session, id: "b-child", parentID: "parent-b" }] })
+    assert.equal(mounted.messageCalls.length, 4)
+    other.dispose()
+    mounted.unmount()
+    assert.ok(mounted.signals.every((signal) => signal.aborted))
+    for (const id of ["subagent-11", "subagent-10", "subagent-9", "subagent-8"]) {
+      await mounted.resolveMessages(id, { data: [] })
+    }
+    assert.equal(mounted.messageCalls.length, 4)
+    assert.deepEqual(mounted.registeredTypes(), [])
+  } finally { other?.dispose(); await mounted.dispose() }
+})
+
+test("asynchronous storage preserves failures written by independent parents", async () => {
+  const mounted = await mountSubagentPanel({ parentID: "parent-a", deferStorage: true })
+  let other
+  try {
+    await mounted.resolveReady([canonicalChildren[2]])
+    other = mounted.mountView("parent-b", ["B child"])
+    await mounted.resolveList({ data: [{ ...canonicalChildren[2].session, id: "b-child", parentID: "parent-b", title: "B child" }] })
+    await mounted.resolveMessages("b-child", { data: canonicalChildren[2].messages })
+    mounted.emit({ type: "session.execution.failed", created: 20_000_000, data: { sessionID: "subagent-9" } })
+    mounted.emit({ type: "session.execution.failed", created: 20_000_001, data: { sessionID: "b-child" } })
+    assert.equal(mounted.view().entryRows[0].durationColor, "#ff0000")
+    assert.equal(other.view().entryRows[0].durationColor, "#ff0000")
+    await mounted.flushWrites()
+    assert.deepEqual(mounted.store.get(subagentFailureKey), {
+      failures: { "parent-a": { "subagent-9": 20_000_000 }, "parent-b": { "b-child": 20_000_001 } },
+    })
+  } finally { other?.dispose(); await mounted.dispose() }
+})
+
+test("rejected native storage writes keep failure evidence after a view remount", async () => {
+  const mounted = await mountSubagentPanel({ parentID: "parent-a", rejectStorage: true })
+  let other
+  try {
+    await mounted.resolveReady([canonicalChildren[2]])
+    mounted.emit({ type: "session.execution.failed", created: 20_000_000, data: { sessionID: "subagent-9" } })
+    await mounted.flushWrites()
+    assert.equal(mounted.view().entryRows[0].durationColor, "#ff0000")
+    mounted.unmount()
+    other = mounted.mountView("parent-a", ["SubAgent9"])
+    await mounted.resolveList({ data: [canonicalChildren[2].session] })
+    await mounted.resolveMessages("subagent-9", { data: canonicalChildren[2].messages })
+    assert.equal(other.view().entryRows[0].durationColor, "#ff0000")
+  } finally { other?.dispose(); await mounted.dispose() }
+})
+
+test("a sidebar and chip for the same parent both publish native failures immediately", async () => {
+  const mounted = await mountSubagentPanel({ parentID: "parent-a" })
+  let chip
+  try {
+    await mounted.resolveReady([canonicalChildren[2]])
+    chip = mounted.mountView("parent-a", [], "prompt.footer.status")
+    await mounted.resolveList({ data: [canonicalChildren[2].session] })
+    await mounted.resolveMessages("subagent-9", { data: canonicalChildren[2].messages })
+    assert.match(chip.text(), /Sub.*0\/1\/0/)
+    mounted.emit({ type: "session.execution.failed", created: 20_000_000, data: { sessionID: "subagent-9" } })
+    assert.equal(mounted.view().entryRows[0].durationColor, "#ff0000")
+    assert.match(chip.text(), /Sub.*0\/0\/1/)
+  } finally { chip?.dispose(); await mounted.dispose() }
+})
+
+test("native pagination includes later worktree children once and excludes grandchildren", async () => {
+  const mounted = await mountSubagentPanel({ parentID: "parent-a" })
+  try {
+    const child = canonicalChildren[2].session
+    const other = { ...child, id: "worktree-child", title: "Worktree", location: { directory: "/other-worktree" } }
+    await mounted.resolveList({ data: [child], cursor: { next: "second" } })
+    assert.deepEqual(mounted.messageCalls, [])
+    await mounted.resolveList({ data: [child, other, { ...other, id: "grandchild", parentID: child.id }] })
+    await mounted.resolveMessages(child.id, { data: canonicalChildren[2].messages })
+    await mounted.resolveMessages(other.id, { data: canonicalChildren[2].messages })
+    assert.deepEqual(mounted.messageCalls.map(({ sessionID }) => sessionID), [child.id, other.id])
+    assert.deepEqual(mounted.listCalls, [{ limit: 100, order: "asc" }, { limit: 100, cursor: "second" }])
+    assert.equal(mounted.view().entryRows.length, 2)
+  } finally { await mounted.dispose() }
 })
 
 test("documents the corrected SubAgent visual behavior", () => {

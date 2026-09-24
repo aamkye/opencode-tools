@@ -1,9 +1,9 @@
-import type { AssistantMessage, Message } from "@opencode-ai/sdk/v2"
+import type { SessionMessageAssistant, SessionMessageInfo } from "@opencode/client"
 
 import { formatCount } from "../presentation/format.js"
 import type { PanelTextSegment } from "../presentation/types.js"
 
-export type SesTokensMessage = Pick<Message, "role"> & Partial<Pick<AssistantMessage, "tokens">>
+export type SesTokensMessage = Pick<SessionMessageInfo, "type"> & Pick<SessionMessageAssistant, "tokens">
 
 export type SesTokenTotals = {
   turns: number
@@ -33,7 +33,7 @@ function finite(value: unknown): number {
 export function createSesTokensPanelModel(messages: readonly SesTokensMessage[]): SesTokensPanelModel {
   const totals: SesTokenTotals = { turns: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 }
   for (const message of messages) {
-    if (message.role !== "assistant") continue
+    if (message.type !== "assistant") continue
     totals.turns += 1
     totals.input += finite(message.tokens?.input)
     totals.output += finite(message.tokens?.output)

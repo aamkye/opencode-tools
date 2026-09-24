@@ -10,7 +10,7 @@ const session = (id, parentID, created) => ({
   time: { created, updated: created },
 })
 
-const message = (sessionID) => ({ role: "assistant", sessionID })
+const message = (sessionID) => ({ type: "assistant", sessionID })
 
 function deferred() {
   let resolve
@@ -29,6 +29,26 @@ const context = (onChildIDs = () => {}) => ({
 
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
+test("forwards parent and attempt signals and cancels active native requests", async () => {
+  const controller = new AbortController()
+  const received = []
+  const loader = createSubagentSnapshotLoader({
+    async listSessions(signal) { received.push(signal); return [session("child", "root", 0)] },
+    sessionStatus() { return "running" },
+    listMessages(id, signal) {
+      received.push(signal)
+      return new Promise((resolve, reject) => signal?.addEventListener("abort", () => reject(signal.reason)))
+    },
+  })
+  const result = loader("root", { signal: controller.signal, onChildIDs() {} })
+  await settle()
+  assert.equal(received[0], controller.signal)
+  assert.ok(received[1] instanceof AbortSignal)
+  const rejected = assert.rejects(result, /abort/i)
+  controller.abort()
+  await rejected
+})
+
 test("returns a complete empty snapshot without message calls", async () => {
   const statusCalls = []
   const messageCalls = []
@@ -37,7 +57,7 @@ test("returns a complete empty snapshot without message calls", async () => {
     async listSessions() { return [session("unrelated", "other", 1)] },
     sessionStatus(sessionID) {
       statusCalls.push(sessionID)
-      return { type: "idle" }
+      return "idle"
     },
     async listMessages(sessionID) {
       messageCalls.push(sessionID)
@@ -67,7 +87,7 @@ test("requests only sorted direct children and never requests grandchildren", as
     async listSessions() { return sessions },
     sessionStatus(sessionID) {
       statusCalls.push(sessionID)
-      return { type: "idle" }
+      return "idle"
     },
     async listMessages(sessionID) {
       messageCalls.push(sessionID)
@@ -92,7 +112,7 @@ test("publishes discovered child IDs before status or message fan-out", async ()
     },
     sessionStatus(sessionID) {
       events.push(["status", sessionID])
-      return { type: "idle" }
+      return "idle"
     },
     async listMessages(sessionID) {
       events.push(["messages", sessionID])
@@ -109,8 +129,8 @@ test("publishes discovered child IDs before status or message fan-out", async ()
 test("keeps sorted output when child requests finish in reverse", async () => {
   const completions = new Map()
   const statuses = new Map([
-    ["child-new", { type: "busy" }],
-    ["child-a", { type: "idle" }],
+    ["child-new", "running"],
+    ["child-a", "idle"],
     ["child-b", undefined],
   ])
   const loader = createSubagentSnapshotLoader({
@@ -154,7 +174,7 @@ test("shares four message slots across overlapping generations", async () => {
         ...Array.from({ length: 6 }, (_, index) => session(`new-${index}`, "new", index)),
       ]
     },
-    sessionStatus() { return { type: "idle" } },
+    sessionStatus() { return "idle" },
     async listMessages(sessionID) {
       messageCalls.push(sessionID)
       active += 1
@@ -188,7 +208,7 @@ test("aborted queued work rejects without starting an SDK call", async () => {
     async listSessions() {
       return [session("active-child", "active", 1), session("queued-child", "queued", 1)]
     },
-    sessionStatus() { return { type: "idle" } },
+    sessionStatus() { return "idle" },
     async listMessages(sessionID) {
       messageCalls.push(sessionID)
       if (sessionID === "active-child") await activeRequest.promise
@@ -226,7 +246,7 @@ test("one failure stops new claims and waits for active requests", async () => {
         session("child-c", "root", 2),
       ]
     },
-    sessionStatus() { return { type: "idle" } },
+    sessionStatus() { return "idle" },
     async listMessages(sessionID) {
       messageCalls.push(sessionID)
       if (sessionID === "child-a") throw new Error("message request failed")
@@ -257,7 +277,7 @@ test("list status or message failure rejects without a partial snapshot", async 
         },
         sessionStatus() {
           if (failure === "status") throw new Error("status failed")
-          return { type: "idle" }
+          return "idle"
         },
         async listMessages(sessionID) {
           if (failure === "message") throw new Error("message failed")

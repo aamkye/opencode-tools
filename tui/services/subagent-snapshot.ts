@@ -1,11 +1,12 @@
-import type { Message, Session, SessionStatus } from "@opencode-ai/sdk/v2"
+import type { SessionInfo, SessionMessageInfo } from "@opencode/client"
+import type { Plugin } from "@opencode/plugin/tui"
 
 import { indexSessionsByParent } from "./session-tree-snapshot.js"
 
 export type SubagentChildSnapshot = {
-  session: Pick<Session, "id" | "parentID" | "title" | "time">
-  status: SessionStatus | undefined
-  messages: readonly Message[]
+  session: Pick<SessionInfo, "id" | "parentID" | "title" | "time" | "outcome" | "agent" | "model">
+  status: ReturnType<Plugin.Context["data"]["session"]["status"]> | undefined
+  messages: readonly SessionMessageInfo[]
 }
 
 export type SubagentSnapshot = {
@@ -25,9 +26,9 @@ export type SubagentSnapshotLoader = (
 ) => Promise<SubagentSnapshot>
 
 export type CreateSubagentSnapshotLoaderOptions = {
-  listSessions(): Promise<readonly Pick<Session, "id" | "parentID" | "title" | "time">[]>
-  sessionStatus(sessionID: string): SessionStatus | undefined
-  listMessages(sessionID: string): Promise<readonly Message[]>
+  listSessions(signal: AbortSignal): Promise<readonly SubagentChildSnapshot["session"][]>
+  sessionStatus(sessionID: string): SubagentChildSnapshot["status"]
+  listMessages(sessionID: string, signal: AbortSignal): Promise<readonly SessionMessageInfo[]>
   concurrency?: number
 }
 
@@ -115,7 +116,7 @@ export function createSubagentSnapshotLoader(
 
   return async (parentID, context) => {
     throwIfAborted(context.signal)
-    const sessions = await options.listSessions()
+    const sessions = await options.listSessions(context.signal)
     throwIfAborted(context.signal)
     const children = ([
       ...(indexSessionsByParent(sessions).get(parentID) ?? []),
@@ -143,7 +144,7 @@ export function createSubagentSnapshotLoader(
           const status = options.sessionStatus(child.id)
           const messages = await limitMessageRequest(
             signal,
-            () => options.listMessages(child.id),
+            () => options.listMessages(child.id, signal),
           )
           completedResults[index] = { session: child, status, messages }
         } catch (error) {

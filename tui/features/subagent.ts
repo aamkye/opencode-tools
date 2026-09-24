@@ -1,5 +1,6 @@
-import type { Message } from "@opencode-ai/sdk/v2"
+import type { SessionMessageInfo } from "@opencode/client"
 
+import { formatDuration } from "../presentation/format.js"
 import type { PanelTextSegment } from "../presentation/types.js"
 import type { SubagentChildSnapshot, SubagentSnapshot } from "../services/subagent-snapshot.js"
 
@@ -39,18 +40,21 @@ function normalizedCells(value: number): number {
   return Math.max(0, Math.floor(finite(value) ?? 0))
 }
 
-function newestMessage(messages: readonly Message[], role: Message["role"]): Message | undefined {
-  let newest: Message | undefined
+function newestMessage<Type extends SessionMessageInfo["type"]>(
+  messages: readonly SessionMessageInfo[],
+  type: Type,
+): Extract<SessionMessageInfo, { type: Type }> | undefined {
+  let newest: SessionMessageInfo | undefined
   let newestCreated = Number.NEGATIVE_INFINITY
   for (const message of messages) {
-    if (message.role !== role) continue
+    if (message.type !== type) continue
     const created = finite(message.time?.created) ?? Number.NEGATIVE_INFINITY
     if (!newest || created > newestCreated) {
       newest = message
       newestCreated = created
     }
   }
-  return newest
+  return newest as Extract<SessionMessageInfo, { type: Type }> | undefined
 }
 
 function identity(value: unknown): string | undefined {
@@ -63,8 +67,6 @@ function durationBetween(end: unknown, start: unknown): number {
   if (finiteEnd === undefined || finiteStart === undefined) return 0
   return Math.max(0, Math.floor(finiteEnd - finiteStart))
 }
-
-import { formatDuration } from "../presentation/format.js"
 
 export function allocateSubagentEntryRow(
   availableCells: number,
@@ -95,40 +97,43 @@ export function createSubagentPanelModel(
         || left.session.id.localeCompare(right.session.id))
 
   const entries = direct.map(({ session, status: synchronizedStatus, messages }) => {
-    const newestAssistant = newestMessage(messages, "assistant")
-    const newestUser = newestMessage(messages, "user")
-    const assistant = newestAssistant?.role === "assistant" ? newestAssistant : undefined
-    const user = newestUser?.role === "user" ? newestUser : undefined
+    const assistant = newestMessage(messages, "assistant")
+    const idle = newestMessage(messages, "idle")
     const errorTimes = messages
-      .map((message) => message.role === "assistant" && message.error
+      .map((message) => message.type === "assistant" && message.error
         ? finite(message.time.completed ?? message.time.created)
-        : undefined)
+        : message.type === "idle" && message.outcome !== "succeeded"
+          ? finite(message.time.created)
+          : undefined)
       .filter((value): value is number => value !== undefined)
     const hasRetainedFailure = Object.hasOwn(failureTimes, session.id)
     const retainedFailureTime = finite(failureTimes[session.id])
-    const hasAssistantError = messages.some((message) => message.role === "assistant" && Boolean(message.error))
-    const hasFailure = hasRetainedFailure || hasAssistantError
+    const hasMessageFailure = messages.some((message) =>
+      (message.type === "assistant" && Boolean(message.error))
+      || (message.type === "idle" && message.outcome !== "succeeded"))
+    const failedOutcome = session.outcome === "failed" || session.outcome === "interrupted"
+    const hasFailure = hasRetainedFailure || hasMessageFailure || failedOutcome
     const status: SubagentStatus = hasFailure
       ? "failed"
-      : synchronizedStatus?.type === "busy" || synchronizedStatus?.type === "retry"
+      : synchronizedStatus === "running"
         ? "running"
-        : synchronizedStatus?.type === "idle"
+        : synchronizedStatus === "idle" || session.outcome === "succeeded" || idle?.outcome === "succeeded"
           ? "successful"
           : assistant?.time.completed !== undefined ? "successful" : "running"
-    const failureTime = [retainedFailureTime, ...errorTimes]
+    const failureTime = [retainedFailureTime, ...errorTimes, ...(failedOutcome ? [finite(session.time.idle)] : [])]
       .filter((value): value is number => value !== undefined)
       .reduce<number | undefined>((earliest, value) => earliest === undefined ? value : Math.min(earliest, value), undefined)
     const durationMs = status === "successful"
-      ? durationBetween(session.time.updated, session.time.created)
+      ? durationBetween(session.time.idle ?? idle?.time.created ?? assistant?.time.completed, session.time.created)
       : status === "failed"
-        ? durationBetween(failureTime, session.time.created)
+        ? durationBetween(failureTime ?? (failedOutcome ? assistant?.time.completed : undefined), session.time.created)
         : durationBetween(now, session.time.created)
 
     return {
       id: session.id,
-      title: session.title,
-      agent: identity(assistant?.agent) ?? identity(user?.agent) ?? "-",
-      model: identity(assistant?.modelID) ?? identity(user?.model?.modelID) ?? "-",
+      title: session.title ?? session.id,
+      agent: identity(session.agent) ?? identity(assistant?.agent) ?? "-",
+      model: identity(session.model?.id) ?? identity(assistant?.model?.id) ?? "-",
       status,
       durationMs,
       duration: formatDuration(durationMs, "hours"),

@@ -1,4 +1,7 @@
 import { createSignal } from "solid-js/dist/solid.js"
+import { createStore, produce } from "solid-js/store"
+import type { Plugin } from "@opencode/plugin/tui"
+import type { SlotClaim } from "@opencode/plugin/tui/context"
 import stringWidth from "string-width"
 
 import {
@@ -8,13 +11,13 @@ import {
   type HostNode,
 } from "./opentui-solid-host-runtime.fixture.js"
 import {
-  createSubagentSource,
+  defineTuiPlugin,
+  pluginDescriptor,
   type RetainedFailures,
-  type SubagentSourceDependencies,
 } from "../shared/opencode-tools-shared.js"
-import subagentPlugin, { subagentRuntimeTestKey } from "../tui/subagent.js"
+import { setupSubagent } from "../tui/subagent.js"
 
-type ClientResult<Data> = { data?: Data; error?: unknown }
+type ClientResult<Data> = { data?: Data; cursor?: { next?: string | null }; error?: unknown }
 type Timer = { callback: () => void; cancelled: boolean; delay: number }
 type Interval = { callback: () => void; cancelled: boolean; delay: number }
 type Child = {
@@ -22,9 +25,9 @@ type Child = {
     id: string
     parentID: string
     title: string
-    time: { created: number; updated: number }
+    time: { created: number; updated: number; idle?: number }
   }
-  status: { type: "idle" | "busy" | "retry" }
+  status: "idle" | "running"
   messages: readonly unknown[]
 }
 
@@ -46,18 +49,15 @@ function message(
   return {
     id: `${sessionID}-message`,
     sessionID,
-    role: "assistant" as const,
+    type: "assistant" as const,
     time: status === "running" ? { created } : { created, completed: created + durationMs },
-    parentID: "",
-    modelID,
-    providerID: "openai",
-    mode: "build",
+    model: { providerID: "openai", id: modelID },
+    content: [],
     agent,
-    path: { cwd: "/repo", root: "/repo" },
     cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
     finish: "stop",
-    ...(status === "failed" ? { error: { name: "UnknownError", data: { message: "failed" } } } : {}),
+    ...(status === "failed" ? { error: { type: "unknown", message: "failed" } } : {}),
   }
 }
 
@@ -75,9 +75,9 @@ function child(
       id: `subagent-${number}`,
       parentID: "parent-a",
       title,
-      time: { created, updated: status === "successful" ? created + durationMs : created + 1 },
+      time: { created, updated: created + 1, ...(status === "running" ? {} : { idle: created + durationMs }) },
     },
-    status: { type: status === "running" ? "busy" : "idle" },
+    status: status === "running" ? "running" : "idle",
     messages: [message(`subagent-${number}`, status, created, durationMs)],
   }
 }
@@ -294,32 +294,33 @@ export async function mountSubagentPanel(options: {
   parentID?: string
   defaultState?: unknown
   store?: Map<string, unknown>
+  slot?: "sidebar.content" | "prompt.footer.status"
+  chip?: "enabled" | "disabled"
+  rejectStorage?: boolean
+  deferStorage?: boolean
 } = {}) {
   const store = options.store ?? new Map<string, unknown>()
   const kvReads: string[] = []
   const kvWrites: Array<[string, unknown]> = []
-  const listCalls: Array<{ directory?: string }> = []
-  const messageCalls: Array<{ sessionID: string; directory?: string }> = []
+  const listCalls: unknown[] = []
+  const messageCalls: Array<{ sessionID: string; cursor?: string }> = []
+  const signals: AbortSignal[] = []
   const statusCalls: string[] = []
-  const routeCalls: Array<[string, unknown]> = []
+  const routeCalls: unknown[] = []
   const pendingLists: Array<(result: ClientResult<readonly unknown[]>) => void> = []
   const pendingMessages: Array<{
     sessionID: string
-    resolve(result: ClientResult<readonly { info: unknown }[]>): void
+    resolve(result: ClientResult<readonly unknown[]>): void
   }> = []
   const statuses = new Map<string, unknown>()
-  const handlers = new Map<string, (event: unknown) => void>()
+  const handlers = new Map<string, Set<(event: unknown) => void>>()
   const registrationCounts = new Map<string, number>()
   const unsubscribeCounts = new Map<string, number>()
   const timers: Timer[] = []
   const intervals: Interval[] = []
-  const registrations: Array<{
-    order?: number
-    slots: Record<string, (ctx: unknown, props: { session_id?: string }) => unknown>
-  }> = []
-  const controller = new AbortController()
-  let cleanups: Array<() => void | Promise<void>> = []
-  let sourceFactoryCallCount = 0
+  const registrations: SlotClaim[] = []
+  const disposedSlots: string[] = []
+  const pendingWrites: Array<() => void> = []
   let slotRenderCount = 0
   let intervalClearCount = 0
   let currentNow = NOW
@@ -352,112 +353,107 @@ export async function mountSubagentPanel(options: {
     },
   }
   const api = {
-    lifecycle: {
-      signal: controller.signal,
-      onDispose(cleanup: () => void | Promise<void>) {
-        cleanups.push(cleanup)
-        return () => { cleanups = cleanups.filter((candidate) => candidate !== cleanup) }
+    options: { defaultState: options.defaultState, chip: options.chip },
+    ui: {
+      slot(claim: SlotClaim) {
+        registrations.push(claim)
+        return () => { disposedSlots.push(claim.append ?? "") }
       },
+      router: { navigate(destination: unknown) { routeCalls.push(destination) } },
     },
-    slots: { register: (registration: typeof registrations[number]) => registrations.push(registration) },
-    state: {
-      path: { directory: "/repo" },
+    data: {
       session: {
         status(sessionID: string) {
           statusCalls.push(sessionID)
           return statuses.get(sessionID)
         },
       },
-    },
-    client: {
-      session: {
-        list(input: { directory?: string }) {
-          listCalls.push(input)
-          return new Promise<ClientResult<readonly unknown[]>>((resolve) => pendingLists.push(resolve))
-        },
-        messages(input: { sessionID: string; directory?: string }) {
-          messageCalls.push(input)
-          return new Promise<ClientResult<readonly { info: unknown }[]>>((resolve) => {
-            pendingMessages.push({ sessionID: input.sessionID, resolve })
-          })
-        },
-      },
-    },
-    event: {
       on(type: string, handler: (event: unknown) => void) {
         registrationCounts.set(type, (registrationCounts.get(type) ?? 0) + 1)
-        if (handlers.has(type)) throw new Error(`${type} registered more than once`)
-        handlers.set(type, handler)
-        unsubscribeCounts.set(type, 0)
+        if (!handlers.has(type)) handlers.set(type, new Set())
+        handlers.get(type)!.add(handler)
         let unsubscribed = false
         return () => {
           if (unsubscribed) return
           unsubscribed = true
           unsubscribeCounts.set(type, (unsubscribeCounts.get(type) ?? 0) + 1)
-          if (handlers.get(type) === handler) handlers.delete(type)
+          handlers.get(type)?.delete(handler)
+          if (handlers.get(type)?.size === 0) handlers.delete(type)
         }
       },
     },
-    kv: {
-      get<T>(key: string, fallback: T): T {
-        kvReads.push(key)
-        return store.has(key) ? store.get(key) as T : fallback
+    client: {
+      session: {
+        list(input: unknown, request: { signal: AbortSignal }) {
+          listCalls.push(input)
+          signals.push(request.signal)
+          return new Promise((resolve, reject) => pendingLists.push((reply) => {
+            if (!reply.data || "error" in reply) reject(reply.error)
+            else resolve({ data: reply.data, cursor: reply.cursor ?? {} })
+          }))
+        },
       },
-      set<T>(key: string, value: T) {
-        store.set(key, value)
-        kvWrites.push([key, value])
+      message: {
+        list(input: { sessionID: string; cursor?: string }, request: { signal: AbortSignal }) {
+          messageCalls.push(input)
+          signals.push(request.signal)
+          return new Promise((resolve, reject) => {
+            pendingMessages.push({ sessionID: input.sessionID, resolve(reply) {
+              if (!reply.data || "error" in reply) reject(reply.error)
+              else resolve({ data: reply.data, cursor: reply.cursor ?? {} })
+            } })
+          })
+        },
       },
     },
-    route: {
-      navigate(route: string, params: unknown) {
-        routeCalls.push([route, params])
+    storage: {
+      store(key: string, { initial }: { initial: { failures: RetainedFailures } }) {
+        kvReads.push(key)
+        const [value, setValue] = createStore(store.get(key) as typeof initial ?? initial)
+        return [value, (mutation: (draft: typeof initial) => void) => new Promise<void>((resolve, reject) => {
+          const write = () => {
+            if (options.rejectStorage) { reject(new Error("storage offline")); return }
+            setValue(produce(mutation))
+            const saved = JSON.parse(JSON.stringify(value))
+            store.set(key, saved)
+            kvWrites.push([key, saved])
+            resolve()
+          }
+          if (options.deferStorage) pendingWrites.push(write)
+          else write()
+        })] as const
       },
     },
     theme: {
-      current: {
-        error: "#ff0000",
-        warning: "#ffaa00",
-        success: "#00ff00",
-        text: "#ffffff",
-        textMuted: "#888888",
+      text: {
+        base: "#ffffff", muted: "#888888",
+        feedback: { error: { base: "#ff0000" }, warning: { base: "#ffaa00" }, success: { base: "#00ff00" } },
       },
     },
   }
-  const meta = {
-    [subagentRuntimeTestKey]: {
-      createSource(dependencies: SubagentSourceDependencies) {
-        sourceFactoryCallCount += 1
-        return createSubagentSource(dependencies)
-      },
-      now: () => currentNow,
-      setTimer: scheduler.setTimer,
-      clearTimer: scheduler.clearTimer,
-      setInterval: scheduler.setInterval,
-      clearInterval: scheduler.clearInterval,
-    },
-  }
-
-  await subagentPlugin.tui(api as never, { defaultState: options.defaultState }, meta)
-  const registration = registrations[0]
-  const slot = registration?.slots.sidebar_content
-  if (!registration || !slot) throw new Error("SubAgent sidebar slot was not registered")
+  const subagentPlugin = defineTuiPlugin(pluginDescriptor("subagent"), (scope, api) => setupSubagent(scope, api, { ...scheduler, now: () => currentNow }))
+  const cleanup = await subagentPlugin.setup(api as unknown as Plugin.Context)
+  const slot = registrations.find((claim) => claim.append === (options.slot ?? "sidebar.content"))
+  if (!slot) throw new Error("Subagent slot was not registered")
 
   const root = createHostNode("root")
   const [hostParentID, setHostParentID] = createSignal(options.parentID ?? "")
   const slotProps = {
-    get session_id() {
+    mode: "normal" as const,
+    showDetails: true,
+    get sessionID() {
       return hostParentID()
     },
   }
   const disposeHost = render(() => (() => {
     slotRenderCount += 1
-    return slot({}, slotProps)
+    return slot.render(slotProps)
   }) as never, root)
   const mountedPanels = new Map<HostNode, HostNode>()
   const disposedPanels = new Set<HostNode>()
 
-  function currentPanel(): HostNode | undefined {
-    const title = textNodes(root).find((node) => textOf(node) === "SubAgent")
+  function currentPanel(viewRoot = root): HostNode | undefined {
+    const title = textNodes(viewRoot).find((node) => textOf(node) === "SubAgent")
     return title?.parent?.parent
   }
 
@@ -476,10 +472,10 @@ export async function mountSubagentPanel(options: {
 
   await flushHost()
 
-  function view() {
+  function view(viewRoot = root, titles = currentTitles) {
     const width = mountedWidth
-    const panel = currentPanel()
-    const title = textNodes(root).find((node) => textOf(node) === "SubAgent")
+    const panel = currentPanel(viewRoot)
+    const title = textNodes(viewRoot).find((node) => textOf(node) === "SubAgent")
     const header = title?.parent
     const headerNodes = header ? descendants(header) : []
     const marker = headerNodes.find((node) => node.type === "text" && ["▶ ", "▼ "].includes(textOf(node)))
@@ -505,7 +501,7 @@ export async function mountSubagentPanel(options: {
     ))
     const detailRows = rows.filter(({ texts }) => texts[0] === "  " && texts[1]?.endsWith(":"))
     const openSession = rows.find(({ texts }) => texts[0] === "  " && texts[1] === "Open Session")
-    const fallback = textNodes(root).find((node) => textOf(node) === "No subagents")
+    const fallback = textNodes(viewRoot).find((node) => textOf(node) === "No subagents")
     const dividers = panel ? descendants(panel).filter(isDivider) : []
     const restDivider = bodyItems.find((item) => isDivider(item) || isExplicitDivider(item))
     const lines = panel && header ? [
@@ -534,7 +530,7 @@ export async function mountSubagentPanel(options: {
       fallbackText: textOf(fallback),
       fallbackColor: fallback?.props.fg,
       dividerCount: dividers.length,
-      bulletCount: textNodes(root).filter((node) => textOf(node) === "• ").length,
+      bulletCount: textNodes(viewRoot).filter((node) => textOf(node) === "• ").length,
       rest: {
         disclosureColor: rows.find(({ texts }) => texts[1] === "Rest")?.layout.cells[0]?.props.fg,
         titleColor: rows.find(({ texts }) => texts[1] === "Rest")?.layout.cells[1]?.props.fg,
@@ -552,7 +548,7 @@ export async function mountSubagentPanel(options: {
         const expanded = titleNode?.props.wrapMode === "char"
         return {
           disclosure: texts[0],
-          title: currentTitles[index] ?? texts[1],
+          title: titles[index] ?? texts[1],
           duration: texts.at(-1) ?? "",
           durationColor: expanded ? undefined : layout.cells.at(-1)?.children.find((child) => child.type === "text")?.props.fg,
           renderedTitle: layout.renderedCells[1]?.trimEnd() ?? "",
@@ -587,7 +583,7 @@ export async function mountSubagentPanel(options: {
         await clickRow(header, "SubAgent header")
       },
       async clickEntry(titleText: string) {
-        const index = currentTitles.indexOf(titleText)
+        const index = titles.indexOf(titleText)
         await clickRow(entryRows[index]?.node, titleText)
       },
       async clickRest() {
@@ -613,10 +609,12 @@ export async function mountSubagentPanel(options: {
     routeCalls,
     panelMounts: () => mountedPanels.size,
     panelDisposals: () => disposedPanels.size,
-    sourceFactoryCalls: () => sourceFactoryCallCount,
     slotRenders: () => slotRenderCount,
-    lifecycleCleanups: () => cleanups.length,
-    lifecycleAborted: () => controller.signal.aborted,
+    signals, disposedSlots,
+    async flushWrites() {
+      await settle()
+      while (pendingWrites.length) { pendingWrites.shift()!(); await settle() }
+    },
     registeredTypes: () => [...handlers.keys()],
     registrationCount: (type: string) => registrationCounts.get(type) ?? 0,
     unsubscribeCount: (type: string) => unsubscribeCounts.get(type) ?? 0,
@@ -633,8 +631,8 @@ export async function mountSubagentPanel(options: {
       setHostParentID(currentParentID)
       await flushHost()
     },
-    emit(event: { type: string; properties: Record<string, unknown> }) {
-      handlers.get(event.type)?.(event)
+    emit(event: { type: string; created?: number; data: Record<string, unknown> }) {
+      for (const handler of handlers.get(event.type) ?? []) handler(event)
     },
     async resolveList(result: ClientResult<readonly unknown[]>) {
       const resolve = pendingLists.shift()
@@ -642,7 +640,7 @@ export async function mountSubagentPanel(options: {
       resolve(result)
       await flushHost()
     },
-    async resolveMessages(sessionID: string, result: ClientResult<readonly { info: unknown }[]>) {
+    async resolveMessages(sessionID: string, result: ClientResult<readonly unknown[]>) {
       const index = pendingMessages.findIndex((pending) => pending.sessionID === sessionID)
       if (index < 0) throw new Error(`No pending session.messages call for ${sessionID}`)
       const [pending] = pendingMessages.splice(index, 1)
@@ -667,7 +665,7 @@ export async function mountSubagentPanel(options: {
       const messages = new Map(resolvedChildren.map((entry) => [entry.session.id, entry.messages]))
       while (pendingMessages.length > 0) {
         const sessionID = pendingMessages[0].sessionID
-        await this.resolveMessages(sessionID, { data: (messages.get(sessionID) ?? []).map((info) => ({ info })) })
+        await this.resolveMessages(sessionID, { data: messages.get(sessionID) ?? [] })
       }
     },
     async runTimer(delay: number) {
@@ -688,16 +686,24 @@ export async function mountSubagentPanel(options: {
       await flushHost()
     },
     view,
+    chipText: () => textOf(root),
+    mountView(parentID: string, titles: string[] = [], path = "sidebar.content") {
+      const claim = registrations.find((claim) => claim.append === path)
+      if (!claim) throw new Error(`Missing ${path}`)
+      const extraRoot = createHostNode("root")
+      const [id, setID] = createSignal(parentID)
+      const dispose = render(() => claim.render({ get sessionID() { return id() }, mode: "normal", showDetails: true }) as never, extraRoot)
+      return { view: () => view(extraRoot, titles), text: () => textOf(extraRoot), setParentID: setID, dispose }
+    },
+    unmount: disposeHost,
+    unload: cleanup,
     async dispose() {
       disposeHost()
       for (const mounted of mountedPanels.keys()) {
         mounted.removed = true
         disposedPanels.add(mounted)
       }
-      controller.abort()
-      const queue = cleanups.reverse()
-      cleanups = []
-      for (const cleanup of queue) await cleanup()
+      await cleanup?.()
       await settle()
     },
   }

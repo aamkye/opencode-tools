@@ -9,7 +9,7 @@ const {
 } = await import("../.tmp-test/session-tree-snapshot.mjs")
 
 const message = (sessionID, input = 1) => ({
-  role: "assistant",
+  type: "assistant",
   sessionID,
   tokens: { input, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
 })
@@ -287,4 +287,34 @@ test("rejects before message requests when the directory list fails", async () =
 
   assert.equal(snapshot, undefined)
   assert.deepEqual(messageCalls, [])
+})
+
+test("forwards parent and attempt cancellation to the native source", async () => {
+  const controller = new AbortController()
+  const received = []
+  const load = createSessionTreeSnapshotLoader({
+    async listSessions(signal) { received.push(signal); return [{ id: "ses_root" }] },
+    async listMessages(id, signal) { received.push(signal); return [] },
+  })
+  await load("ses_root", { signal: controller.signal, onSessionIDs() {} })
+  assert.equal(received[0], controller.signal)
+  assert.ok(received[1] instanceof AbortSignal)
+})
+
+test("aborting a load cancels active message client requests", async () => {
+  const controller = new AbortController()
+  let received
+  const load = createSessionTreeSnapshotLoader({
+    async listSessions() { return [] },
+    listMessages(id, signal) {
+      received = signal
+      return new Promise((resolve, reject) => signal?.addEventListener("abort", () => reject(signal.reason)))
+    },
+  })
+  const result = load("root", { signal: controller.signal, onSessionIDs() {} })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.ok(received instanceof AbortSignal)
+  const rejected = assert.rejects(result, /abort/i)
+  controller.abort()
+  await rejected
 })
