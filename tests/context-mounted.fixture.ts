@@ -1,169 +1,141 @@
-import { createRoot, createSignal } from "solid-js"
+import type { LocationRef, ModelInfo, SessionMessageInfo } from "@opencode/client"
+import type { Plugin } from "@opencode/plugin/tui"
+import type { SlotClaim } from "@opencode/plugin/tui/context"
+import { RGBA } from "@opentui/core"
+import { createSignal } from "solid-js"
 
 import contextPlugin from "../tui/context.js"
+import { createHostNode, render, type HostNode } from "./opentui-solid-host-runtime.fixture.js"
 
-export type ContextFixtureMessage = {
-  role: "assistant" | "user"
-  providerID?: string
-  modelID?: string
-  cost?: number
-  tokens?: {
-    total?: number
-    input: number
-    output: number
-    reasoning: number
-    cache: { read: number; write: number }
+export const colors = {
+  error: RGBA.fromHex("#ff0000"), warning: RGBA.fromHex("#ffaa00"), success: RGBA.fromHex("#00ff00"),
+  text: RGBA.fromHex("#ffffff"), textMuted: RGBA.fromHex("#888888"),
+}
+
+export function contextModel(context = 322_000): ModelInfo {
+  return {
+    id: "gpt", providerID: "openai", modelID: "upstream-gpt", name: "GPT",
+    capabilities: { tools: true, input: ["text"], output: ["text"] },
+    variants: [], time: { released: 0 }, cost: [], status: "active", enabled: true,
+    limit: { context, output: 1_000 },
   }
 }
-export type ContextFixtureProvider = {
-  id: string
-  models: Record<string, { limit?: { context?: number } }>
-}
-export type ContextFixtureOptions = {
-  sessionID?: string
-  sessions?: ReadonlyMap<string, readonly ContextFixtureMessage[]>
-  providers?: readonly ContextFixtureProvider[]
-  defaultState?: unknown
-  savedCollapsed?: boolean
-  store?: Map<string, unknown>
-}
 
-type MountedElement = { type: string | ((props: Record<string, unknown>) => unknown); props: Record<string, unknown> }
-type MountedNode = { element: MountedElement; parent?: MountedNode }
-const COLLAPSED_KEY = "aamkye.opencode-tools-context.collapsed"
 const LABELS = new Set(["Limit", "Tokens", "Used", "Spent"])
 
-function isElement(value: unknown): value is MountedElement {
-  return typeof value === "object" && value !== null && "type" in value && "props" in value
-}
-function mount(value: unknown): unknown {
-  if (!isElement(value) || typeof value.type !== "function") return value
-  if (value.type.name === "Show") return value
-  return mount(value.type(value.props))
-}
-function expand(value: unknown, parent?: MountedNode): MountedNode[] {
-  if (typeof value === "function") return expand(value(), parent)
-  if (Array.isArray(value)) return value.flatMap((child) => expand(child, parent))
-  if (!isElement(value)) return []
-  if (typeof value.type === "string") {
-    const node = { element: value, parent }
-    return [node, ...expand(value.props.children, node)]
-  }
-  if (value.type.name === "Show") {
-    if (!value.props.when) return expand(value.props.fallback, parent)
-    const render = value.props.children
-    return expand(typeof render === "function" ? render(() => value.props.when) : render, parent)
-  }
-  return expand(value.type(value.props), parent)
-}
-function descendantsOf(nodes: readonly MountedNode[], parent: MountedNode): MountedNode[] {
-  return nodes.filter((node) => {
-    let current = node.parent
-    while (current) {
-      if (current === parent) return true
-      current = current.parent
-    }
-    return false
-  })
-}
-function textOf(node: MountedNode | undefined): string {
-  return typeof node?.element.props.children === "string" ? node.element.props.children : ""
+function descendants(root: HostNode): HostNode[] {
+  return [root, ...root.children.flatMap(descendants)]
 }
 
-export async function mountContextPanel(options: ContextFixtureOptions = {}) {
-  const [sessions, setSessions] = createSignal(options.sessions ?? new Map())
-  const [providers, setProviders] = createSignal(options.providers ?? [])
-  const store = options.store ?? new Map<string, unknown>()
-  if (options.savedCollapsed !== undefined) store.set(COLLAPSED_KEY, options.savedCollapsed)
-  const kvReads: string[] = []
-  const kvWrites: Array<[string, unknown]> = []
+function textOf(node: HostNode | undefined): string {
+  if (!node) return ""
+  if (node.type === "#text") return String(node.props.value ?? "")
+  return node.children.map(textOf).join("")
+}
+
+export async function mountContextPanel(options: {
+  sessionID?: string
+  sessions?: ReadonlyMap<string, SessionMessageInfo[]>
+  models?: ModelInfo[]
+  location?: LocationRef
+  defaultLocation?: LocationRef
+  defaultState?: unknown
+  chip?: "enabled" | "disabled"
+} = {}) {
+  const [sessionID, setSessionID] = createSignal(options.sessionID)
+  const [sessions, setSessions] = createSignal(options.sessions ?? new Map<string, SessionMessageInfo[]>())
+  const [models, setModels] = createSignal(options.models)
+  const [defaultLocation, setDefaultLocation] = createSignal(options.defaultLocation ?? { directory: "/default" })
+  const [errorColor, setErrorColor] = createSignal(colors.error)
+  const storageCalls: string[] = []
   const messageCalls: string[] = []
-  const registrations: Array<{
-    order?: number
-    slots: Record<string, (ctx: unknown, props: { session_id?: string }) => unknown>
-  }> = []
-  const controller = new AbortController()
-  let cleanups: Array<() => void | Promise<void>> = []
+  const modelCalls: Array<LocationRef | undefined> = []
+  const registrations: SlotClaim[] = []
+  const disposedSlots: Array<string | undefined> = []
+  const listMessages: Plugin.Context["data"]["session"]["message"]["list"] = (id) => {
+    messageCalls.push(id)
+    return sessions().get(id) ?? []
+  }
+  const listModels: Plugin.Context["data"]["location"]["model"]["list"] = (location) => {
+    modelCalls.push(location)
+    return models()
+  }
+  const slot: Plugin.Context["ui"]["slot"] = (claim) => {
+    registrations.push(claim)
+    return () => { disposedSlots.push(claim.append) }
+  }
+  const storage: Plugin.Context["storage"] = {
+    store(key) { storageCalls.push(key); throw new Error("Context must not persist disclosure state") },
+    memory(key) { storageCalls.push(key); throw new Error("Context must not persist disclosure state") },
+  }
   const api = {
-    lifecycle: {
-      signal: controller.signal,
-      onDispose(cleanup: () => void | Promise<void>) {
-        cleanups.push(cleanup)
-        return () => { cleanups = cleanups.filter((candidate) => candidate !== cleanup) }
-      },
+    options: { defaultState: options.defaultState, chip: options.chip },
+    location: options.location,
+    data: {
+      session: { message: { list: listMessages } },
+      location: { default: defaultLocation, model: { list: listModels } },
     },
-    slots: { register: (registration: typeof registrations[number]) => registrations.push(registration) },
-    state: {
-      get provider() { return providers() },
-      session: {
-        messages(sessionID: string) {
-          messageCalls.push(sessionID)
-          return sessions().get(sessionID) ?? []
-        },
-      },
+    ui: { slot },
+    storage,
+    get theme() {
+      return { text: {
+        base: colors.text, muted: colors.textMuted,
+        feedback: {
+          error: { base: errorColor(), muted: colors.textMuted },
+          warning: { base: colors.warning, muted: colors.textMuted },
+          success: { base: colors.success, muted: colors.textMuted },
+        } satisfies Pick<Plugin.Context["theme"]["text"]["feedback"], "error" | "warning" | "success">,
+      } }
     },
-    kv: {
-      get<T>(key: string, fallback: T): T {
-        kvReads.push(key)
-        return store.has(key) ? store.get(key) as T : fallback
-      },
-      set<T>(key: string, value: T) {
-        store.set(key, value)
-        kvWrites.push([key, value])
-      },
-    },
-    theme: { current: { error: "#ff0000", warning: "#ffaa00", success: "#00ff00", text: "#ffffff", textMuted: "#888888" } },
   }
 
-  await contextPlugin.tui(api as never, { defaultState: options.defaultState }, undefined)
-  const slot = registrations[0]?.slots.sidebar_content
-  if (!slot) throw new Error("Context sidebar slot was not registered")
+  // Only the native Context capabilities used by this plugin are supplied by the host fixture.
+  const cleanup = await contextPlugin.setup(api as unknown as Plugin.Context)
+  const sidebar = registrations.find((claim): claim is SlotClaim<"sidebar.content"> => claim.append === "sidebar.content")
+  const chip = registrations.find((claim): claim is SlotClaim<"prompt.footer.status"> => claim.append === "prompt.footer.status")
+  if (!sidebar) throw new Error("Context sidebar slot was not registered")
 
-  let tree: unknown
+  const root = createHostNode("root")
+  const chipRoot = createHostNode("root")
   let slotMounts = 0
-  let disposeRoot: () => void = () => undefined
-  createRoot((dispose) => {
-    disposeRoot = dispose
+  let chipMounts = 0
+  const disposePanel = render(() => {
     slotMounts += 1
-    tree = mount(slot({}, options.sessionID ? { session_id: options.sessionID } : {}))
-  })
+    return sidebar.render({ get sessionID() { return sessionID() ?? "" } }) as never
+  }, root)
+  const disposeChip = render(() => {
+    if (!chip) return null as never
+    chipMounts += 1
+    return chip.render({ get sessionID() { return sessionID() }, mode: "normal", showDetails: true }) as never
+  }, chipRoot)
 
   function view(width = 37) {
-    const nodes = expand(tree)
-    const header = nodes.find((node) => node.element.type === "box" && typeof node.element.props.onMouseDown === "function")
-    const headerNodes = header ? descendantsOf(nodes, header) : []
-    const marker = headerNodes.find((node) => ["▶ ", "▼ "].includes(textOf(node)))
-    const title = headerNodes.find((node) => textOf(node) === "Context")
-    const summary = headerNodes.find((node) => node.element.type === "text" && node !== marker && node !== title)
-    const rows = nodes.filter((node) => node.element.type === "text" && LABELS.has(textOf(node))).map((label) => {
+    const nodes = descendants(root)
+    const header = nodes.find((node) => node.type === "box" && typeof node.props.onMouseDown === "function")
+    const headerNodes = header ? descendants(header) : []
+    const marker = headerNodes.find((node) => node.type === "text" && ["▶ ", "▼ "].includes(textOf(node)))
+    const title = headerNodes.find((node) => node.type === "text" && textOf(node) === "Context")
+    const summary = headerNodes.find((node) => node.type === "text" && node !== marker && node !== title)
+    const rows = nodes.filter((node) => node.type === "text" && LABELS.has(textOf(node))).map((label) => {
       const row = label.parent
       if (!row) throw new Error("Context label is missing its row")
-      const value = nodes.find((node) => node.parent === row && node.element.type === "text" && node !== label)
+      const value = row.children.find((node) => node.type === "text" && node !== label)
       const labelText = textOf(label)
       const valueText = textOf(value)
       return {
-        label: labelText,
-        value: valueText,
-        valueColor: value?.element.props.fg,
+        label: labelText, value: valueText, valueColor: value?.props.fg,
         renderedText: `${labelText}${" ".repeat(Math.max(0, width - labelText.length - valueText.length))}${valueText}`,
-        rowProps: row.element.props,
-        labelProps: label.element.props,
-        valueProps: value?.element.props ?? {},
+        rowProps: row.props, labelProps: label.props, valueProps: value?.props ?? {},
       }
     })
-    const dividers = nodes.filter((node) => node.element.type === "box"
-      && node.element.props.width === "100%"
-      && node.element.props.height === 1
-      && (node.element.props.border as string[] | undefined)?.[0] === "top")
+    const dividers = nodes.filter((node) => node.type === "box" && node.props.width === "100%"
+      && node.props.height === 1 && (node.props.border as string[] | undefined)?.[0] === "top")
     return {
-      marker: textOf(marker),
-      title: textOf(title),
-      summaryText: textOf(summary),
-      summaryColor: summary?.element.props.fg,
-      rows,
-      dividerCount: dividers.length,
+      panel: header?.parent,
+      marker: textOf(marker), title: textOf(title), summaryText: textOf(summary), summaryColor: summary?.props.fg,
+      rows, dividerCount: dividers.length,
       clickHeader() {
-        const onMouseDown = header?.element.props.onMouseDown
+        const onMouseDown = header?.props.onMouseDown
         if (typeof onMouseDown !== "function") throw new Error("Context header is not interactive")
         onMouseDown()
       },
@@ -172,26 +144,22 @@ export async function mountContextPanel(options: ContextFixtureOptions = {}) {
 
   return {
     pluginID: contextPlugin.id,
-    registrations,
-    kvReads,
-    kvWrites,
-    messageCalls,
-    store,
+    registrations, disposedSlots, storageCalls, messageCalls, modelCalls,
     slotMounts: () => slotMounts,
-    lifecycleCleanups: () => cleanups.length,
-    lifecycleAborted: () => controller.signal.aborted,
-    setSessionID(sessionID?: string) { slot({}, sessionID ? { session_id: sessionID } : {}) },
-    setMessages(sessionID: string, messages: readonly ContextFixtureMessage[]) {
-      setSessions((current) => new Map(current).set(sessionID, messages))
+    chipMounts: () => chipMounts,
+    setSessionID,
+    setMessages(id: string, messages: SessionMessageInfo[]) {
+      setSessions((current) => new Map(current).set(id, messages))
     },
-    setProviders,
-    view,
+    setModels, setDefaultLocation, setErrorColor, view,
+    chipView() {
+      const nodes = descendants(chipRoot).filter((node) => node.type === "text")
+      return { text: nodes.map(textOf).join(""), segments: nodes.map((node) => [textOf(node), node.props.fg]) }
+    },
     async dispose() {
-      disposeRoot()
-      controller.abort()
-      const queue = cleanups.reverse()
-      cleanups = []
-      for (const cleanup of queue) await cleanup()
+      disposePanel()
+      disposeChip()
+      await cleanup?.()
     },
   }
 }

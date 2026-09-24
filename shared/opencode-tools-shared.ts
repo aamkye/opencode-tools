@@ -24,11 +24,7 @@ export type { StatusRowAllocation } from "../tui/presentation/layout.js";
 export { createMcpPanelModel } from "../tui/features/mcp.js";
 export type { McpPanelModel, McpStatusRow } from "../tui/features/mcp.js";
 export { createContextPanelModel } from "../tui/features/context.js";
-export type {
-  ContextMessage,
-  ContextPanelModel,
-  ContextProvider,
-} from "../tui/features/context.js";
+export type { ContextPanelModel } from "../tui/features/context.js";
 export { createSesTokensPanelModel } from "../tui/features/ses-tokens.js";
 export type { SesTokenTotals, SesTokensMessage, SesTokensPanelModel } from "../tui/features/ses-tokens.js";
 export { allocateSubagentEntryRow, createSubagentPanelModel } from "../tui/features/subagent.js";

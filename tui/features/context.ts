@@ -1,18 +1,7 @@
-import type { AssistantMessage, Message, Provider } from "@opencode-ai/sdk/v2"
+import type { ModelInfo, SessionMessageAssistant, SessionMessageInfo } from "@opencode/client"
 
 import { formatCount, formatCurrency } from "../presentation/format.js"
 import type { PanelStatus } from "../presentation/types.js"
-
-export type ContextMessage = Pick<Message, "role"> & Partial<Pick<
-  AssistantMessage,
-  "providerID" | "modelID" | "cost" | "tokens"
->>
-
-export type ContextProvider = Pick<Provider, "id"> & {
-  models: Record<string, {
-    limit?: Partial<Pick<Provider["models"][string]["limit"], "context">>
-  }>
-}
 
 export type ContextPanelModel = {
   limit: string
@@ -28,7 +17,7 @@ function finite(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0
 }
 
-function messageTokens(message: ContextMessage): number {
+function messageTokens(message: SessionMessageAssistant): number {
   const tokens = message.tokens
   if (!tokens) return 0
   return finite(tokens.input)
@@ -39,15 +28,15 @@ function messageTokens(message: ContextMessage): number {
 }
 
 export function createContextPanelModel(
-  messages: readonly ContextMessage[],
-  providers: readonly ContextProvider[],
+  messages: readonly SessionMessageInfo[],
+  models: readonly ModelInfo[],
 ): ContextPanelModel {
   let spent = 0
-  let selected: { message: ContextMessage; tokens: number } | undefined
+  let selected: { message: SessionMessageAssistant; tokens: number } | undefined
 
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
-    if (message.role !== "assistant") continue
+    if (message.type !== "assistant") continue
     spent += finite(message.cost)
     if (!selected) {
       const tokens = messageTokens(message)
@@ -68,10 +57,9 @@ export function createContextPanelModel(
   }
   if (!selected) return unavailable
 
-  const provider = providers.find((candidate) => candidate.id === selected.message.providerID)
-  const limit = selected.message.modelID
-    ? provider?.models[selected.message.modelID]?.limit?.context
-    : undefined
+  const model = models.find((candidate) => candidate.providerID === selected.message.model.providerID
+    && candidate.id === selected.message.model.id)
+  const limit = model?.limit?.context
   if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) return unavailable
 
   const percentage = Math.round((selected.tokens / limit) * 100)

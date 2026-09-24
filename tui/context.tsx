@@ -1,9 +1,10 @@
-import { createEffect, createMemo, createSignal, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, Show } from "solid-js"
 
 import {
   CompactPanel,
   createContextPanelModel,
   defineTuiPlugin,
+  panelTheme,
   pluginDescriptor,
   resolveChipOption,
   resolveCollapseDefault,
@@ -29,81 +30,76 @@ function ContextMetricRow(props: {
   )
 }
 
-const plugin = defineTuiPlugin(descriptor, (_context, api, options) => {
-  const [sessionID, setSessionID] = createSignal("")
-  const defaultCollapsed = resolveCollapseDefault(options, false).collapsed
-  const chipEnabled = resolveChipOption(options, true).enabled
+const plugin = defineTuiPlugin(descriptor, (scope, api) => {
+  const defaultCollapsed = resolveCollapseDefault(api.options, false).collapsed
+  const chipEnabled = resolveChipOption(api.options, true).enabled
+  const location = () => api.location ?? api.data.location.default()
+  const theme = () => panelTheme(api)
 
-  function ContextChip(props: { sessionID: string; theme: () => PanelTheme }) {
+  function ContextChip(props: { sessionID?: string }) {
     const model = createMemo(() => {
-      const messages = props.sessionID ? api.state.session.messages(props.sessionID) : []
-      return createContextPanelModel(messages, api.state.provider)
+      const messages = props.sessionID ? api.data.session.message.list(props.sessionID) : []
+      return createContextPanelModel(messages, api.data.location.model.list(location()) ?? [])
     })
     return (
       <Show when={model().summary !== "-"}>
         <StatusChip
           label="Ctx"
           segments={[{ text: model().summary, ...(model().usageStatus ? { status: model().usageStatus } : {}) }]}
-          theme={props.theme}
+          theme={theme}
         />
       </Show>
     )
   }
 
-  function ContextPanel() {
+  function ContextPanel(props: { sessionID: string }) {
     const [collapsed, setCollapsed] = createSignal(defaultCollapsed)
     createEffect(() => {
-      sessionID()
+      props.sessionID
       setCollapsed(defaultCollapsed)
     })
     const model = createMemo(() => {
-      const currentSessionID = sessionID()
-      const messages = currentSessionID ? api.state.session.messages(currentSessionID) : []
-      return createContextPanelModel(messages, api.state.provider)
+      const messages = props.sessionID ? api.data.session.message.list(props.sessionID) : []
+      return createContextPanelModel(messages, api.data.location.model.list(location()) ?? [])
     })
     const toggle = () => setCollapsed((current) => !current)
-    const render = () => (
+    return (
       <CompactPanel
         title="Context"
         collapsed={collapsed()}
         summary={collapsed() ? { text: model().summary, status: model().usageStatus } : undefined}
         onToggle={toggle}
         footerDivider={!collapsed()}
-        theme={() => api.theme.current}
+        theme={theme}
       >
-        <ContextMetricRow label="Limit" value={model().limit} theme={() => api.theme.current} />
-        <ContextMetricRow label="Tokens" value={model().tokens} theme={() => api.theme.current} />
+        <ContextMetricRow label="Limit" value={model().limit} theme={theme} />
+        <ContextMetricRow label="Tokens" value={model().tokens} theme={theme} />
         <ContextMetricRow
           label="Used"
           value={model().used}
           status={model().usageStatus}
-          theme={() => api.theme.current}
+          theme={theme}
         />
         <ContextMetricRow
           label="Spent"
           value={model().spent}
           status={model().spentStatus}
-          theme={() => api.theme.current}
+          theme={theme}
         />
       </CompactPanel>
     )
-    return render as unknown as JSX.Element
   }
 
-  api.slots.register({
-    order: descriptor.slotOrder,
-    slots: {
-      sidebar_content(_ctx, props) {
-        setSessionID(props?.session_id ?? "")
-        return <ContextPanel />
-      },
-      session_prompt_right(_ctx, props) {
-        return chipEnabled
-          ? <ContextChip sessionID={props?.session_id ?? ""} theme={() => api.theme.current} />
-          : null
-      },
-    },
-  })
+  scope.onCleanup(api.ui.slot({
+    append: "sidebar.content",
+    render: (props) => <ContextPanel sessionID={props.sessionID} />,
+  }))
+  if (chipEnabled) {
+    scope.onCleanup(api.ui.slot({
+      append: "prompt.footer.status",
+      render: (props) => <ContextChip sessionID={props.sessionID} />,
+    }))
+  }
 })
 
 export default plugin

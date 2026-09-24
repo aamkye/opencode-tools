@@ -48,8 +48,8 @@ for (const [entryPoint, outfile, conditions, plugins, external] of [
   ["tui/presentation/renderer.tsx", ".tmp-test/presentation-renderer.mjs"],
   ["tests/presentation-mounted.fixture.ts", ".tmp-test/presentation-mounted.mjs"],
   ["tests/compact-panel-mounted.fixture.ts", ".tmp-test/compact-panel-mounted.mjs"],
-  ["tests/mcp-mounted.fixture.ts", ".tmp-test/mcp-mounted.mjs", ["browser"]],
-  ["tests/context-mounted.fixture.ts", ".tmp-test/context-mounted.mjs", ["browser"]],
+  ["tests/mcp-mounted.fixture.ts", ".tmp-test/mcp-mounted.mjs", ["browser"], [openTuiSolidPlugin], ["@opentui/core"]],
+  ["tests/context-mounted.fixture.ts", ".tmp-test/context-mounted.mjs", ["browser"], [openTuiSolidPlugin], ["@opentui/core"]],
   [
     "tests/ses-tokens-mounted.fixture.ts",
     ".tmp-test/ses-tokens-mounted.mjs",
