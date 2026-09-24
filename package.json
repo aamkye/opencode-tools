@@ -1,7 +1,7 @@
 {
   "name": "@aamkye/opencode-tools",
   "version": "1.0.0",
-  "description": "OpenCode TUI sidebar plugin for GLM rate limit reset countdown",
+  "description": "Native OpenCode V2 quota, context, session tokens, SubAgent, Home and MCP plugins",
   "private": true,
   "type": "module",
   "exports": {
@@ -22,6 +22,7 @@
   "scripts": {
     "test": "node tests/compile-presentation.mjs && node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
+    "test:v2-smoke": "node tests/v2-plugin-smoke.mjs",
     "build": "npm run build:plugins",
     "build:plugins": "node build-plugins.mjs",
     "deploy:local": "node deploy-plugins.mjs local",

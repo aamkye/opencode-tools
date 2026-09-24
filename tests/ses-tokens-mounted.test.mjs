@@ -40,7 +40,7 @@ async function exhaustFailedLoad(mounted) {
 test("registers native sidebar and chip slots with session-scoped requests", async () => {
   const mounted = await mountSesTokensPanel()
   try {
-    assert.equal(mounted.pluginID, "aamkye/opencode-tools-ses-tokens")
+    assert.equal(mounted.pluginID, "aamkye.opencode-tools-ses-tokens")
     assert.deepEqual(mounted.registrations.map((claim) => claim.append), ["sidebar.content", "prompt.footer.status"])
     assert.deepEqual(mounted.listCalls, [])
     assert.equal(await mounted.setSessionID(), null)

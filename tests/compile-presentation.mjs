@@ -81,10 +81,6 @@ for (const [entryPoint, outfile, conditions, plugins, external] of [
   ["tui/services/subagent-snapshot.ts", ".tmp-test/subagent-snapshot.mjs", ["browser"]],
   ["tui/services/ses-tokens-source.ts", ".tmp-test/ses-tokens-source.mjs", ["browser"]],
   ["tui/services/subagent-source.ts", ".tmp-test/subagent-source.mjs", ["browser"]],
-  ["tui/quota.tsx", ".tmp-test/plugin-adapters-quota-fixture.mjs", ["browser"]],
-  ["tui/home.tsx", ".tmp-test/plugin-adapters-home-fixture.mjs", ["browser"]],
-  ["tui/mcp.tsx", ".tmp-test/plugin-adapters-mcp-fixture.mjs", ["browser"]],
-  ["tui/subagent.tsx", ".tmp-test/plugin-adapters-subagent-fixture.mjs", ["browser"], [openTuiSolidPlugin]],
   ["tui/runtime/plugin.ts", ".tmp-test/plugin-runtime.mjs"],
   ["tui/features/collapse-options.ts", ".tmp-test/collapse-options.mjs"],
 ]) {

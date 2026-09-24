@@ -17,6 +17,7 @@ export function createNativeQuotaHost(input: {
   const keys = { openai: input.openai ?? null, zai: input.zai ?? null }
   let generation = 0
   const listeners = new Map<string, Set<(event: OpenCodeEvent) => void>>()
+  const subscriptions: Array<{ type: string; disposals: number }> = []
   const [messages, setMessages] = createSignal(input.messages ?? [])
   const [location, setLocation] = createSignal({ directory: "/test", workspaceID: "wrk_test" })
   const stored: unknown[] = []
@@ -41,10 +42,12 @@ export function createNativeQuotaHost(input: {
     } },
     data: {
       on(type: string, handler: (event: OpenCodeEvent) => void) {
+        const subscription = { type, disposals: 0 }
+        subscriptions.push(subscription)
         const set = listeners.get(type) ?? new Set()
         listeners.set(type, set)
         set.add(handler)
-        return () => { set.delete(handler) }
+        return () => { subscription.disposals++; set.delete(handler) }
       },
       session: { get: () => undefined, message: { list: messages } },
       location: { default: location, provider: { list: () => [{ id: "zai-coding-plan" }, { id: "openai" }] } },
@@ -64,7 +67,7 @@ export function createNativeQuotaHost(input: {
     for (const handler of listeners.get(type) ?? []) handler({ type, id: "test-event", created: Date.now(), data, location: eventLocation } as OpenCodeEvent)
   }
   return {
-    api, stored, rpcCalls, setMessages, setLocation, emit,
+    api, stored, rpcCalls, setMessages, setLocation, emit, subscriptions,
     listenerCount: () => [...listeners.values()].reduce((sum, value) => sum + value.size, 0),
     setCredential(provider: keyof typeof keys, key: string | null) {
       keys[provider] = key

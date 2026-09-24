@@ -85,7 +85,7 @@ async function exhaustFailedLoad(mounted) {
 
 test("registers native SubAgent sidebar and chip slots", async () => {
   const mounted = await mountSubagentPanel()
-  assert.equal(mounted.pluginID, "aamkye/opencode-tools-subagent")
+  assert.equal(mounted.pluginID, "aamkye.opencode-tools-subagent")
   assert.deepEqual(mounted.registrations.map((claim) => claim.append), ["sidebar.content", "prompt.footer.status"])
   assert.deepEqual(mounted.registeredTypes(), eventTypes)
   assert.deepEqual(mounted.kvReads, [

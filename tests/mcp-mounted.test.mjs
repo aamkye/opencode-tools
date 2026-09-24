@@ -17,7 +17,7 @@ test("registers native MCP sidebar and footer slots and renders rows in source o
 
   try {
     const view = mounted.view()
-    assert.equal(mounted.pluginID, "aamkye/opencode-tools-mcp")
+    assert.equal(mounted.pluginID, "aamkye.opencode-tools-mcp")
     assert.deepEqual(mounted.registrations.map((claim) => claim.append), ["sidebar.content", "prompt.footer.status"])
     assert.equal(view.marker, "▼ ")
     assert.equal(view.summaryText, "")

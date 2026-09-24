@@ -1,4 +1,4 @@
-import { Plugin } from "@opencode/plugin"
+import * as Plugin from "@opencode/plugin/promise/plugin"
 import { publicConnectionID, resolveQuotaCredential } from "./lib/quota/credentials.js"
 import { fetchOpenAiQuota } from "./lib/quota/openai.js"
 import { fetchZaiQuota } from "./lib/quota/zai.js"
@@ -49,7 +49,7 @@ export async function fetchQuota(
 }
 
 export default Plugin.define({
-  id: "aamkye/opencode-tools-quota-service",
+  id: "aamkye.opencode-tools-quota-service",
   async setup(context) {
     const lifetime = new AbortController()
     await context.rpc.register(QuotaRpc, {

@@ -165,6 +165,8 @@ const precedenceCases = [
   { name: "per-panel artifact over source", local: [["./opencode-tools-context.js", { defaultState: "collapsed" }], ["./tui/context.tsx", { defaultState: "expanded" }]], wantPanel: { defaultState: "collapsed" } },
   { name: "cleanup-only historical options never become quota options", local: [["./tokens.ts", { reportOnly: true }], [`./${obsoleteNamespace}-shared.tsx`, { helperOnly: true }]] },
   { name: "native string preserves default options over legacy tuples", local: ["./opencode-tools-quota", ["./opencode-tools-quota.js", localOptions]] },
+  { name: "slash-qualified V1 ID preserves quota options", local: [["aamkye/opencode-tools-quota", localOptions]], want: localOptions },
+  { name: "native dotted ID preserves quota options", local: [{ package: "aamkye.opencode-tools-quota", options: localOptions }], want: localOptions },
 ]
 for (const scenario of precedenceCases) {
   test(`migration precedence: ${scenario.name}`, async (t) => {

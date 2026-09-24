@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { execFileSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { builtinModules, registerHooks } from "node:module"
@@ -123,8 +124,8 @@ test("build:plugins emits the manifest artifact layout and return shape", async 
     assert.ok(output.length > 0, `${file} is empty`)
     if (file.endsWith(".json")) continue
     assert.doesNotMatch(output, /\brequire\s*\(/, `${file} is not ESM`)
-    // Zod includes multiline JIT source strings even in minified output.
-    assert.ok(output.split("\n").length < 30, `${file} is not compact`)
+    assert.doesNotMatch(output, /\bfrom["'](?:@opentui\/|solid-js|@opencode\/plugin\/tui)/,
+      `${file} hides host imports from OpenCode 2.0.16's whitespace-sensitive loader`)
     assert.doesNotMatch(output, /opentui:runtime-module:/, `${file} uses the V1 loader`)
     assert.doesNotMatch(output, /sourceMappingURL/, `${file} contains a source map reference`)
   }
@@ -136,14 +137,14 @@ test("build removes retired managed report and rename outputs", () => {
 })
 
 test("compiled MCP keeps collapse state reactive", () => {
-  assert.match(contents["dist/opencode-tools-mcp/tui.js"], /get collapsed\(\)\{/)
+  assert.match(contents["dist/opencode-tools-mcp/tui.js"], /get collapsed\(\)\s*\{/)
 })
 
 test("every standalone feature imports the external shared artifact", () => {
   for (const entry of pluginManifest) {
     const result = buildResults.features[entry.key]
     const output = contents[`dist/${entry.outfile}`]
-    assert.match(output, /from["']\.\.\/opencode-tools-shared\.js["']/, entry.key)
+    assert.match(output, /from\s+["']\.\.\/opencode-tools-shared\.js["']/, entry.key)
     assert.ok(
       Object.values(result.metafile.outputs).some((metafileOutput) => metafileOutput.imports.some((dependency) => (
         dependency.path === "../opencode-tools-shared.js" && dependency.external
@@ -181,7 +182,7 @@ test("feature metafiles contain their own source and no sibling feature", () => 
   assert.equal(pluginManifest
     .filter((entry) => entry.key !== "ses-tokens")
     .every((entry) => !includesSource(sesTokensInputs, entry.source)), true)
-  assert.match(contents["dist/opencode-tools-ses-tokens/tui.js"], /from["']\.\.\/opencode-tools-shared\.js["']/)
+  assert.match(contents["dist/opencode-tools-ses-tokens/tui.js"], /from\s+["']\.\.\/opencode-tools-shared\.js["']/)
 
   const subagentResult = buildResults.features.subagent
   assert.ok(subagentResult, "missing subagent build result")
@@ -190,11 +191,11 @@ test("feature metafiles contain their own source and no sibling feature", () => 
   assert.equal(includesSource(subagentInputs, "tui/features/subagent.ts"), false)
   assert.equal(includesSource(subagentInputs, "tui/services/subagent-snapshot.ts"), false)
   assert.equal(includesSource(subagentInputs, "tui/services/subagent-source.ts"), false)
-  assert.match(contents["dist/opencode-tools-subagent/tui.js"], /from["']\.\.\/opencode-tools-shared\.js["']/)
+  assert.match(contents["dist/opencode-tools-subagent/tui.js"], /from\s+["']\.\.\/opencode-tools-shared\.js["']/)
   assert.doesNotMatch(contents["dist/opencode-tools-subagent/tui.js"], /(?:^|["'])\.\.\/tui\//)
 })
 
-test("all host and built-in dependencies remain external", () => {
+test("all UI host and built-in dependencies remain external", () => {
   const builtins = new Set(builtinModules.flatMap((name) => [name, name.replace(/^node:/, "")]))
   const results = [buildResults.shared, buildResults.quotaService, ...Object.values(buildResults.features)].filter(Boolean)
 
@@ -205,7 +206,8 @@ test("all host and built-in dependencies remain external", () => {
         const host = dependency.path === "solid-js"
           || dependency.path.startsWith("solid-js/")
           || dependency.path.startsWith("@opentui/")
-          || dependency.path.startsWith("@opencode/")
+          || dependency.path === "@opencode/plugin/tui"
+          || dependency.path.startsWith("@opencode/theme")
           || dependency.path.startsWith("bun:")
           || builtins.has(bare)
         if (host) assert.equal(dependency.external, true, `${dependency.path} was bundled`)
@@ -223,8 +225,8 @@ test("bundles ordinary dependencies but never host runtime copies", () => {
     "strip-ansi",
   ]
 
-  assert.deepEqual(nodeModulePackageRoots(buildResults.shared), ["zod"])
-  assert.deepEqual(nodeModulePackageRoots(buildResults.quotaService), ["zod"])
+  assert.deepEqual(nodeModulePackageRoots(buildResults.shared), ["@opencode/plugin", "@opencode/schema", "zod"])
+  assert.deepEqual(nodeModulePackageRoots(buildResults.quotaService), ["@opencode/plugin", "@opencode/schema", "zod"])
   for (const [feature, result] of Object.entries(buildResults.features)) {
     assert.deepEqual(
       nodeModulePackageRoots(result),
@@ -262,13 +264,24 @@ test("quota companion registers RPC independently without the client shared modu
   assert.equal(includesSource(inputs, "quota-service.ts"), true)
   assert.equal(inputs.some((file) => file.startsWith("tui/") || file.includes("opencode-tools-shared")), false)
   const { default: plugin } = await import(pathToFileURL(resolve(buildRoot, "dist/opencode-tools-quota-service/index.js")))
-  assert.equal(plugin.id, "aamkye/opencode-tools-quota-service")
+  assert.equal(plugin.id, "aamkye.opencode-tools-quota-service")
   const registrations = []
   const cleanup = await plugin.setup({ rpc: { register: async (...args) => registrations.push(args) } })
   assert.equal(registrations.length, 1)
   assert.equal(typeof registrations[0][1].fetch, "function")
   await cleanup()
   await cleanup()
+})
+
+test("deployed server entrypoints load without a workspace resolver or node_modules", () => {
+  const paths = [...pluginManifest.map((entry) => `opencode-tools-${entry.key}`), "opencode-tools-quota-service"]
+    .map((name) => pathToFileURL(resolve(buildRoot, "dist", name, "index.js")).href)
+  execFileSync(process.execPath, ["--input-type=module", "-e", `
+    for (const path of ${JSON.stringify(paths)}) {
+      const { default: plugin } = await import(path)
+      if (typeof plugin.setup !== "function") throw new Error("Missing native setup: " + path)
+    }
+  `], { cwd: buildRoot, env: { PATH: process.env.PATH }, stdio: "pipe" })
 })
 
 test("each artifact loads alone, activates only its feature, and cleans up", async () => {

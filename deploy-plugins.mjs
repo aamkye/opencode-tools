@@ -58,7 +58,7 @@ function managedSpec(spec, configRoot, targetRoot) {
 
   for (const entry of pluginManifest) {
     const name = `opencode-tools-${entry.key}`
-    if ([name, entry.id].includes(normalized)
+    if ([name, entry.id, `aamkye/${name}`].includes(normalized)
       || [name, entry.outfile, `${name}/index.js`, `plugins/${name}`].some((candidate) => at(targetRoot, candidate))) {
       return { key: entry.key, native: true, priority: 0 }
     }
@@ -68,7 +68,7 @@ function managedSpec(spec, configRoot, targetRoot) {
       return { key: entry.key, priority: 2 }
     }
   }
-  if ([quotaCompanion, `aamkye/${quotaCompanion}`].includes(normalized)
+  if ([quotaCompanion, `aamkye.${quotaCompanion}`, `aamkye/${quotaCompanion}`].includes(normalized)
     || [quotaCompanion, `${quotaCompanion}/index.js`].some((candidate) => at(targetRoot, candidate))) {
     return { key: "quota-service", native: true, priority: 0 }
   }

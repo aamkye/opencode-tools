@@ -4,12 +4,12 @@ import test from "node:test"
 import { pluginManifest, validatePluginManifest } from "../plugin-manifest.mjs"
 
 const expected = [
-  ["home", "aamkye/opencode-tools-home", "tui/home.tsx", "opencode-tools-home/tui.js", "none"],
-  ["context", "aamkye/opencode-tools-context", "tui/context.tsx", "opencode-tools-context/tui.js", "defaultState"],
-  ["ses-tokens", "aamkye/opencode-tools-ses-tokens", "tui/ses-tokens.tsx", "opencode-tools-ses-tokens/tui.js", "defaultState"],
-  ["subagent", "aamkye/opencode-tools-subagent", "tui/subagent.tsx", "opencode-tools-subagent/tui.js", "defaultState"],
-  ["quota", "aamkye/opencode-tools-quota", "tui/quota.tsx", "opencode-tools-quota/tui.js", "quota"],
-  ["mcp", "aamkye/opencode-tools-mcp", "tui/mcp.tsx", "opencode-tools-mcp/tui.js", "defaultState"],
+  ["home", "aamkye.opencode-tools-home", "tui/home.tsx", "opencode-tools-home/tui.js", "none"],
+  ["context", "aamkye.opencode-tools-context", "tui/context.tsx", "opencode-tools-context/tui.js", "defaultState"],
+  ["ses-tokens", "aamkye.opencode-tools-ses-tokens", "tui/ses-tokens.tsx", "opencode-tools-ses-tokens/tui.js", "defaultState"],
+  ["subagent", "aamkye.opencode-tools-subagent", "tui/subagent.tsx", "opencode-tools-subagent/tui.js", "defaultState"],
+  ["quota", "aamkye.opencode-tools-quota", "tui/quota.tsx", "opencode-tools-quota/tui.js", "quota"],
+  ["mcp", "aamkye.opencode-tools-mcp", "tui/mcp.tsx", "opencode-tools-mcp/tui.js", "defaultState"],
 ]
 
 test("manifest describes the six retained standalone plugins in deployment order", () => {

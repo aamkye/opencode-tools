@@ -13,7 +13,9 @@ const hostDependencies = [
   "solid-js",
   "solid-js/*",
   "@opentui/*",
-  "@opencode/*",
+  "@opencode/plugin/tui",
+  "@opencode/theme",
+  "@opencode/theme/*",
   "bun:*",
   ...builtinModules,
   ...builtinModules.filter((name) => !name.startsWith("node:")).map((name) => `node:${name}`),
@@ -25,7 +27,9 @@ const common = {
   external: hostDependencies,
   format: "esm",
   metafile: true,
-  minify: true,
+  // OpenCode 2.0.16's runtime import rewrite requires whitespace after `from`.
+  minifyIdentifiers: true,
+  minifySyntax: true,
   platform: "node",
   target: "es2022",
 }
@@ -97,7 +101,14 @@ export async function buildPlugins({
   const features = {}
   for (const entry of manifest) {
     const packageRoot = await writePackage(distRoot, `opencode-tools-${entry.key}`, true)
-    await writeFile(resolve(packageRoot, "index.js"), `import { Plugin } from "@opencode/plugin"\nexport default Plugin.define({ id: ${JSON.stringify(entry.id)}, setup() {} })\n`)
+    // The server does not inject bare plugin imports for deployed local files.
+    // Bundle the published, stateless define helper; keep CLI UI runtimes external.
+    await build({
+      ...common,
+      stdin: { contents: `import * as Plugin from "@opencode/plugin/promise/plugin"\nexport default Plugin.define({ id: ${JSON.stringify(entry.id)}, setup() {} })`, resolveDir: projectRoot },
+      logLevel,
+      outfile: resolve(packageRoot, "index.js"),
+    })
     features[entry.key] = await build({
       ...common,
       entryPoints: [entry.source],

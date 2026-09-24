@@ -14,7 +14,7 @@ test("registers native Context sidebar and footer slots and renders the expanded
   const mounted = await mountContextPanel({ sessionID: "session-a", sessions, models: [contextModel()] })
   try {
     const view = mounted.view()
-    assert.equal(mounted.pluginID, "aamkye/opencode-tools-context")
+    assert.equal(mounted.pluginID, "aamkye.opencode-tools-context")
     assert.deepEqual(mounted.registrations.map((claim) => claim.append), ["sidebar.content", "prompt.footer.status"])
     assert.equal(view.marker, "▼ ")
     assert.equal(view.title, "Context")
