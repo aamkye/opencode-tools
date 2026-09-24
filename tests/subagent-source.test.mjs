@@ -107,10 +107,12 @@ function createHarness(loadSnapshot, { failures = {}, now = () => 1_000, saveFai
     loadFailures() {
       return storedFailures
     },
-    saveFailures(value) {
-      saves.push(value)
+    saveFailures(mutation) {
+      saves.push(mutation)
+      if (saveFailures) return saveFailures(mutation)
+      const value = cloneFailures(storedFailures)
+      mutation(value)
       storedFailures = value
-      return saveFailures?.(value)
     },
     now,
     setTimer: scheduler.setTimer,
@@ -351,6 +353,19 @@ test("records the first known session error immediately and only once", async ()
   assert.deepEqual(source.state().failureTimes, { child: 100 })
   assert.equal(saves.length, 1)
   assert.deepEqual(scheduler.pendingDelays(), [200])
+})
+
+test("an earlier native failure corrects the retained time without later duplicates extending it", async () => {
+  const { source, emit, saves, failures } = createHarness(async () => snapshot("parent", "child"))
+  source.setParentID("parent")
+  await settle()
+  emit({ ...error("child"), created: 200 })
+  emit({ ...error("child"), created: 100 })
+  emit({ ...error("child"), created: 300 })
+  assert.deepEqual(source.state().failureTimes, { child: 100 })
+  assert.deepEqual(failures(), { parent: { child: 100 } })
+  assert.equal(saves.length, 2)
+  source.dispose()
 })
 
 test("retains immediate errors for event-proven direct children until publication", async () => {

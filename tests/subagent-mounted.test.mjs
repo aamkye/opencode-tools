@@ -836,6 +836,135 @@ test("asynchronous storage preserves failures written by independent parents", a
   } finally { other?.dispose(); await mounted.dispose() }
 })
 
+for (const order of [[0, 1], [1, 0]]) {
+  test(`independent setups preserve different parents with deferred flush order ${order}`, async () => {
+    const store = new Map()
+    const a = await mountSubagentPanel({ parentID: "parent-a", store, deferStorage: true })
+    const b = await mountSubagentPanel({ parentID: "parent-b", store, deferStorage: true })
+    const setups = [a, b]
+    let other
+    try {
+      await a.resolveReady([canonicalChildren[2]])
+      await b.resolveReady([canonicalChildren[1]])
+      a.emit({ type: "session.execution.failed", created: 20_000_000, data: { sessionID: "subagent-9" } })
+      b.emit({ type: "session.execution.failed", created: 20_000_001, data: { sessionID: "subagent-10" } })
+      await setups[order[0]].flushWrites()
+      await setups[order[1]].flushWrites()
+      assert.deepEqual(store.get(subagentFailureKey), {
+        failures: { "parent-a": { "subagent-9": 20_000_000 }, "parent-b": { "subagent-10": 20_000_001 } },
+      })
+
+      // A new view in A must also see B's committed evidence through the live store.
+      other = a.mountView("parent-b", [canonicalChildren[1].session.title])
+      await a.resolveList({ data: [{ ...canonicalChildren[1].session, parentID: "parent-b" }] })
+      await a.resolveMessages("subagent-10", { data: canonicalChildren[1].messages })
+      assert.equal(other.view().entryRows[0].durationColor, "#ff0000")
+    } finally { other?.dispose(); await a.dispose(); await b.dispose() }
+  })
+
+  test(`independent setups preserve sibling failures with deferred flush order ${order}`, async () => {
+    const store = new Map()
+    const a = await mountSubagentPanel({ parentID: "parent-a", store, deferStorage: true })
+    const b = await mountSubagentPanel({ parentID: "parent-a", store, deferStorage: true })
+    const setups = [a, b]
+    try {
+      await a.resolveReady(canonicalChildren.slice(1, 3))
+      await b.resolveReady(canonicalChildren.slice(1, 3))
+      a.emit({ type: "session.execution.failed", created: 20_000_000, data: { sessionID: "subagent-9" } })
+      b.emit({ type: "session.execution.failed", created: 20_000_001, data: { sessionID: "subagent-10" } })
+      await setups[order[0]].flushWrites()
+      await setups[order[1]].flushWrites()
+      assert.deepEqual(store.get(subagentFailureKey), {
+        failures: { "parent-a": { "subagent-9": 20_000_000, "subagent-10": 20_000_001 } },
+      })
+    } finally { await a.dispose(); await b.dispose() }
+  })
+
+  test(`independent setups keep the earliest failure with deferred flush order ${order}`, async () => {
+    const store = new Map()
+    const a = await mountSubagentPanel({ parentID: "parent-a", store, deferStorage: true })
+    const b = await mountSubagentPanel({ parentID: "parent-a", store, deferStorage: true })
+    const setups = [a, b]
+    try {
+      await a.resolveReady([canonicalChildren[2]])
+      await b.resolveReady([canonicalChildren[2]])
+      a.emit({ type: "session.execution.failed", created: 20_000_000, data: { sessionID: "subagent-9" } })
+      b.emit({ type: "session.execution.failed", created: 20_001_000, data: { sessionID: "subagent-9" } })
+      await setups[order[0]].flushWrites()
+      await setups[order[1]].flushWrites()
+      assert.deepEqual(store.get(subagentFailureKey), {
+        failures: { "parent-a": { "subagent-9": 20_000_000 } },
+      })
+      await b.runTimer(200)
+      await b.resolveReady([canonicalChildren[2]])
+      assert.equal(b.view().entryRows[0].duration, "15m 4s")
+    } finally { await a.dispose(); await b.dispose() }
+  })
+
+  test(`independent setups prune only absent children with deferred flush order ${order}`, async () => {
+    const store = new Map([[subagentFailureKey, {
+      failures: { "parent-a": { "subagent-9": 19_999_000 }, other: { outside: 12 } },
+    }]])
+    const a = await mountSubagentPanel({ parentID: "parent-a", store, deferStorage: true })
+    const b = await mountSubagentPanel({ parentID: "parent-a", store, deferStorage: true })
+    const setups = [a, b]
+    try {
+      // A sees the deletion; B still has the older topology when a sibling fails.
+      await a.resolveReady([])
+      await b.resolveReady(canonicalChildren.slice(1, 3))
+      b.emit({ type: "session.execution.failed", created: 20_000_001, data: { sessionID: "subagent-10" } })
+      await setups[order[0]].flushWrites()
+      await setups[order[1]].flushWrites()
+      assert.deepEqual(store.get(subagentFailureKey), {
+        failures: { "parent-a": { "subagent-10": 20_000_001 }, other: { outside: 12 } },
+      })
+    } finally { await a.dispose(); await b.dispose() }
+  })
+}
+
+test("pending local evidence does not hide another setup's durable failures", async () => {
+  const store = new Map()
+  const a = await mountSubagentPanel({ parentID: "parent-a", store, deferStorage: true })
+  const b = await mountSubagentPanel({ parentID: "parent-b", store, deferStorage: true })
+  let other
+  try {
+    await a.resolveReady([canonicalChildren[2]])
+    await b.resolveReady([canonicalChildren[1]])
+    a.emit({ type: "session.execution.failed", created: 20_000_000, data: { sessionID: "subagent-9" } })
+    b.emit({ type: "session.execution.failed", created: 20_000_001, data: { sessionID: "subagent-10" } })
+    await b.flushWrites()
+    other = a.mountView("parent-b", [canonicalChildren[1].session.title])
+    await a.resolveList({ data: [{ ...canonicalChildren[1].session, parentID: "parent-b" }] })
+    await a.resolveMessages("subagent-10", { data: canonicalChildren[1].messages })
+    assert.equal(other.view().entryRows[0].durationColor, "#ff0000")
+    await a.flushWrites()
+  } finally { other?.dispose(); await a.dispose(); await b.dispose() }
+})
+
+test("a later successful write retains earlier rejected evidence across view remounts", async () => {
+  const options = { parentID: "parent-a", rejectStorage: true, deferStorage: true }
+  const mounted = await mountSubagentPanel(options)
+  let other
+  try {
+    await mounted.resolveReady(canonicalChildren.slice(1, 3))
+    mounted.emit({ type: "session.execution.failed", created: 20_000_000, data: { sessionID: "subagent-9" } })
+    await mounted.flushWrites()
+    options.rejectStorage = false
+    mounted.emit({ type: "session.execution.failed", created: 20_000_001, data: { sessionID: "subagent-10" } })
+    await mounted.flushWrites()
+    assert.deepEqual(mounted.store.get(subagentFailureKey), {
+      failures: { "parent-a": { "subagent-9": 20_000_000, "subagent-10": 20_000_001 } },
+    })
+    mounted.unmount()
+    other = mounted.mountView("parent-a")
+    await mounted.resolveList({ data: canonicalChildren.slice(1, 3).map(({ session }) => session) })
+    for (const entry of canonicalChildren.slice(1, 3)) {
+      await mounted.resolveMessages(entry.session.id, { data: entry.messages })
+    }
+    assert.deepEqual(other.view().entryRows.map(({ durationColor }) => durationColor), ["#ff0000", "#ff0000"])
+  } finally { other?.dispose(); await mounted.dispose() }
+})
+
 test("rejected native storage writes keep failure evidence after a view remount", async () => {
   const mounted = await mountSubagentPanel({ parentID: "parent-a", rejectStorage: true })
   let other

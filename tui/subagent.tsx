@@ -179,18 +179,25 @@ export function setupSubagent(scope: TuiFeatureContext, api: Plugin.Context, inj
   const [stored, updateStored] = api.storage.store<{ failures: RetainedFailures }>(FAILURE_KEY, {
     initial: { failures: {} },
   })
-  const loadFailures = () => structuredClone(unwrap(stored.failures))
-  let pendingFailures: RetainedFailures | undefined
+  const pendingMutations: Array<(failures: RetainedFailures) => void> = []
+  const loadFailures = () => {
+    const failures = structuredClone(unwrap(stored.failures))
+    for (const mutation of pendingMutations) mutation(failures)
+    return failures
+  }
   let writes = Promise.resolve()
-  const saveFailures = (failures: RetainedFailures) => {
+  const saveFailures = (mutation: (failures: RetainedFailures) => void) => {
     // Views share pending evidence even if storage defers or rejects a write.
-    pendingFailures = failures
-    const write = writes.then(() => updateStored((draft) => {
-      draft.failures = failures
-    }))
-    writes = write.then(() => {
-      if (pendingFailures === failures) pendingFailures = undefined
-    }, () => {})
+    pendingMutations.push(mutation)
+    const write = writes.then(async () => {
+      const mutations = pendingMutations.slice()
+      if (mutations.length === 0) return
+      await updateStored((draft) => {
+        for (const mutation of mutations) mutation(draft.failures)
+      })
+      pendingMutations.splice(0, mutations.length)
+    })
+    writes = write.catch(() => {})
     return write
   }
   // All views use the same four message-request slots.
@@ -210,8 +217,7 @@ export function setupSubagent(scope: TuiFeatureContext, api: Plugin.Context, inj
   function useState(parentID: () => string) {
     const source = createSubagentSource({
       loadSnapshot, onEvent: api.data.on,
-      loadFailures: () => pendingFailures ? structuredClone(pendingFailures) : loadFailures(),
-      saveFailures,
+      loadFailures, saveFailures,
       now: injected.now, setTimer: injected.setTimer, clearTimer: injected.clearTimer,
     })
     const [state, setState] = createSignal<SubagentSourceState | undefined>(source.state())

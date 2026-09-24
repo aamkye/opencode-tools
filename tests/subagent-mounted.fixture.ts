@@ -37,6 +37,9 @@ const REST_COLLAPSED_KEY = "aamkye.opencode-tools-subagent.rest-collapsed"
 const EXPANDED_CHILD_KEY = "aamkye.opencode-tools-subagent.expanded-child"
 const NOW = 20_000_000
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+// Separate plugin setups share the host's live-synchronized durable state.
+type FailureStore = ReturnType<typeof createStore<{ failures: RetainedFailures }>>
+const liveStores = new WeakMap<Map<string, unknown>, Map<string, FailureStore>>()
 
 function message(
   sessionID: string,
@@ -409,7 +412,14 @@ export async function mountSubagentPanel(options: {
     storage: {
       store(key: string, { initial }: { initial: { failures: RetainedFailures } }) {
         kvReads.push(key)
-        const [value, setValue] = createStore(store.get(key) as typeof initial ?? initial)
+        let records = liveStores.get(store)
+        if (!records) liveStores.set(store, records = new Map())
+        let record = records.get(key)
+        if (!record) {
+          record = createStore(structuredClone(store.get(key) as typeof initial ?? initial))
+          records.set(key, record)
+        }
+        const [value, setValue] = record
         return [value, (mutation: (draft: typeof initial) => void) => new Promise<void>((resolve, reject) => {
           const write = () => {
             if (options.rejectStorage) { reject(new Error("storage offline")); return }

@@ -41,7 +41,8 @@ export type SubagentSourceDependencies = {
   loadSnapshot: SubagentSnapshotLoader
   onEvent: SubagentEventRegistrar
   loadFailures(): RetainedFailures
-  saveFailures(value: RetainedFailures): void | Promise<void>
+  // Apply only affected parent/child deltas to the latest durable state.
+  saveFailures(mutation: (failures: RetainedFailures) => void): void | Promise<void>
   now(): number
   setTimer(callback: () => void, delayMs: number): unknown
   clearTimer(timer: unknown): void
@@ -134,13 +135,9 @@ export function createSubagentSource({
     for (const childID of childIDs) knownDirectChildIDs.add(childID)
   }
 
-  function persistFailures(): void {
+  function persistFailures(mutation: (failures: RetainedFailures) => void): void {
     try {
-      // Other mounted parents may have written since this view was created.
-      const value = copyFailures(loadFailures())
-      if (retainedFailures[parentID]) value[parentID] = { ...retainedFailures[parentID] }
-      else delete value[parentID]
-      void Promise.resolve(saveFailures(value)).catch(() => {
+      void Promise.resolve(saveFailures(mutation)).catch(() => {
         // A rejected durable write must not discard live failure evidence.
       })
     } catch {
@@ -151,22 +148,31 @@ export function createSubagentSource({
   function mergeFailures(): void {
     const stored = loadFailures()[parentID]
     if (!stored) return
-    retainedFailures[parentID] = { ...stored, ...retainedFailures[parentID] }
+    const existing = retainedFailures[parentID] ??= {}
+    for (const [childID, time] of Object.entries(stored)) {
+      existing[childID] = Math.min(existing[childID] ?? time, time)
+    }
   }
 
   function pruneFailures(capturedParentID: string, childIDs: readonly string[]): void {
     const existing = retainedFailures[capturedParentID]
     if (!existing) return
     const childIDSet = new Set(childIDs)
-    const pruned = Object.fromEntries(
-      Object.entries(existing).filter(([childID]) => childIDSet.has(childID)),
-    )
-    if (Object.keys(pruned).length === Object.keys(existing).length) return
+    const removed = Object.keys(existing).filter((childID) => !childIDSet.has(childID))
+    if (removed.length === 0) return
 
+    const pruned = { ...existing }
+    for (const childID of removed) delete pruned[childID]
     retainedFailures = { ...retainedFailures }
     if (Object.keys(pruned).length === 0) delete retainedFailures[capturedParentID]
     else retainedFailures[capturedParentID] = pruned
-    persistFailures()
+    persistFailures((failures) => {
+      const current = failures[capturedParentID]
+      if (!current) return
+      // A concurrent write may have added a sibling since this snapshot loaded.
+      for (const childID of removed) delete current[childID]
+      if (Object.keys(current).length === 0) delete failures[capturedParentID]
+    })
   }
 
   async function attemptLoad(
@@ -274,14 +280,17 @@ export function createSubagentSource({
     const capturedGeneration = invalidate()
     mergeFailures()
     const existing = retainedFailures[capturedParentID] ?? {}
-    if (!(childID in existing)) {
-      const failureTime = Number.isFinite(created) ? created : now()
+    const failureTime = Number.isFinite(created) ? created : now()
+    if (!(childID in existing) || failureTime < existing[childID]) {
       if (!isCurrentGeneration(capturedParentID, capturedGeneration)) return
       retainedFailures = {
         ...retainedFailures,
         [capturedParentID]: { ...existing, [childID]: failureTime },
       }
-      persistFailures()
+      persistFailures((failures) => {
+        const current = failures[capturedParentID] ??= {}
+        current[childID] = Math.min(current[childID] ?? failureTime, failureTime)
+      })
     }
     if (!isCurrentGeneration(capturedParentID, capturedGeneration)) return
     publishFailureTimes()
