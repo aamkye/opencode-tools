@@ -203,6 +203,7 @@ export function setupSubagent(scope: TuiFeatureContext, api: Plugin.Context, inj
   // All views use the same four message-request slots.
   const loadSnapshot = createSubagentSnapshotLoader({
     listSessions: (signal) => sessions.listSessions({}, signal),
+    getSession: (sessionID, signal) => sessions.getSession(sessionID, signal),
     sessionStatus: (sessionID) => api.data.session.status(sessionID),
     listMessages: (sessionID, signal) => sessions.listMessages(sessionID, signal),
   })

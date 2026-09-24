@@ -10,7 +10,7 @@ type Expect<Value extends true> = Value
 
 export type ContextAcceptsNativeMessagesAndModels = Expect<Equal<
   Parameters<typeof createContextPanelModel>,
-  [messages: readonly SessionMessageInfo[], models: readonly ModelInfo[]]
+  [messages: readonly SessionMessageInfo[], models: readonly ModelInfo[], sessionCost: number | undefined]
 >>
 export type ContextMessagesAreNativeMessages = Expect<Equal<
   ReturnType<Plugin.Context["data"]["session"]["message"]["list"]>,
@@ -29,5 +29,6 @@ export function inspectContextState(api: Plugin.Context, sessionID: string) {
   return createContextPanelModel(
     api.data.session.message.list(sessionID),
     api.data.location.model.list(api.location ?? api.data.location.default()) ?? [],
+    api.data.session.get(sessionID)?.cost,
   )
 }

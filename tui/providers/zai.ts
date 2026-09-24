@@ -190,121 +190,134 @@ function freshnessFor(phase: ZaiPanelPhase): ProviderFreshness {
 }
 
 export function createZaiProvider(api: Plugin.Context, options: QuotaProviderOptions = {}): QuotaProviderAdapter {
-  return createRoot((dispose) => {
-    type PublishedQuota = { data: ZaiQuotaData; generation: number }
+  let disposeRoot: (() => void) | undefined
+  let disposeEngine: (() => void) | undefined
+  try {
+    return createRoot((dispose) => {
+      disposeRoot = dispose
+      // Acquire storage before starting subscriptions or the initial quota request.
+      const [settings, updateSettings] = api.storage.store("quota-zai", {
+        initial: { baselineSgt: FALLBACK_BASELINE_SGT, cycleMs: FALLBACK_CYCLE_MS },
+      })
+      type PublishedQuota = { data: ZaiQuotaData; generation: number }
 
-    const [quotaState, setQuotaState] = createSignal<PublishedQuota | null>(null)
-    const quotaData = () => quotaState()?.data ?? null
-    const [phase, setPhase] = createSignal<ZaiPanelPhase>("loading")
-    const [lastSuccessAt, setLastSuccessAt] = createSignal(0)
-    const [retryAfterEpoch, setRetryAfterEpoch] = createSignal<number | null>(null)
-    const [baselineSgt, setBaselineSgt] = createSignal(FALLBACK_BASELINE_SGT)
-    const [cycleMs, setCycleMs] = createSignal(FALLBACK_CYCLE_MS)
-    const [sessionID, setLocalSessionID] = createSignal<string | null>(null)
-    const [now, setNow] = createSignal(Date.now())
+      const [quotaState, setQuotaState] = createSignal<PublishedQuota | null>(null)
+      const quotaData = () => quotaState()?.data ?? null
+      const [phase, setPhase] = createSignal<ZaiPanelPhase>("loading")
+      const [lastSuccessAt, setLastSuccessAt] = createSignal(0)
+      const [retryAfterEpoch, setRetryAfterEpoch] = createSignal<number | null>(null)
+      const [baselineSgt, setBaselineSgt] = createSignal(FALLBACK_BASELINE_SGT)
+      const [cycleMs, setCycleMs] = createSignal(FALLBACK_CYCLE_MS)
+      const [sessionID, setLocalSessionID] = createSignal<string | null>(null)
+      const [now, setNow] = createSignal(Date.now())
 
-    let providerDisposed = false
-    const transport = createQuotaTransport(api, { provider: "zai" })
+      let providerDisposed = false
+      const transport = createQuotaTransport(api, { provider: "zai" })
 
-    const engine = createQuotaPollingEngine<ZaiQuotaData, string, ZaiPanelPhase>({
-      providerId: "zai",
-      refreshIntervalMs: options.refreshIntervalMs,
-      exhaustedPollMs: EXHAUSTED_POLL_MS,
-      resolveCredential: transport.identity,
-      fetch: async (identity, signal) => {
-        const response = await transport.fetch(identity, signal)
-        return response.provider === "zai" ? response.result : { kind: "invalid-response" }
-      },
-      quotaState,
-      lastSuccessAt,
-      initialPhase: "loading",
-      isExhausted: (data) => data.tokenRemainingPct === 0,
-      onCredentialMissing: () => "unavailable",
-      onCredentialChanged: () => { setRetryAfterEpoch(null) },
-      onFetchAuthRequired: (h) => {
-        setQuotaState(null)
-        setRetryAfterEpoch(null)
-        h.clearScheduledRefresh()
-        return "unavailable"
-      },
-      onFetchSuccess: () => { setPhase("ready") },
-      onFetchTransientFailure: () =>
-        retryAfterEpoch() && retryAfterEpoch()! > Date.now() ? "rate-limited" : "heuristic",
-      onFetchInvalidResponse: () => quotaData() ? "stale"
-        : retryAfterEpoch() && retryAfterEpoch()! > Date.now() ? "rate-limited" : "heuristic",
-      onStaleHorizon: (h) => {
-        setQuotaState(null)
-        h.clearScheduledRefresh()
-        setPhase("heuristic")
-      },
-      onDispose: () => { providerDisposed = true; dispose() },
-      setQuotaState,
-      setPhase,
-      setLastSuccessAt,
-      setNow,
-    })
+      const engine = createQuotaPollingEngine<ZaiQuotaData, string, ZaiPanelPhase>({
+        providerId: "zai",
+        refreshIntervalMs: options.refreshIntervalMs,
+        exhaustedPollMs: EXHAUSTED_POLL_MS,
+        resolveCredential: transport.identity,
+        fetch: async (identity, signal) => {
+          const response = await transport.fetch(identity, signal)
+          return response.provider === "zai" ? response.result : { kind: "invalid-response" }
+        },
+        quotaState,
+        lastSuccessAt,
+        initialPhase: "loading",
+        isExhausted: (data) => data.tokenRemainingPct === 0,
+        onCredentialMissing: () => "unavailable",
+        onCredentialChanged: () => { setRetryAfterEpoch(null) },
+        onFetchAuthRequired: (h) => {
+          setQuotaState(null)
+          setRetryAfterEpoch(null)
+          h.clearScheduledRefresh()
+          return "unavailable"
+        },
+        onFetchSuccess: () => { setPhase("ready") },
+        onFetchTransientFailure: () =>
+          retryAfterEpoch() && retryAfterEpoch()! > Date.now() ? "rate-limited" : "heuristic",
+        onFetchInvalidResponse: () => quotaData() ? "stale"
+          : retryAfterEpoch() && retryAfterEpoch()! > Date.now() ? "rate-limited" : "heuristic",
+        onStaleHorizon: (h) => {
+          setQuotaState(null)
+          h.clearScheduledRefresh()
+          setPhase("heuristic")
+        },
+        onDispose: () => { providerDisposed = true; dispose() },
+        setQuotaState,
+        setPhase,
+        setLastSuccessAt,
+        setNow,
+      })
+      disposeEngine = engine.dispose
 
-    const [settings, updateSettings] = api.storage.store("quota-zai", {
-      initial: { baselineSgt: FALLBACK_BASELINE_SGT, cycleMs: FALLBACK_CYCLE_MS },
-    })
-    createEffect(() => {
-      if (typeof settings.baselineSgt === "string" && parseSgt(settings.baselineSgt) !== null) setBaselineSgt(settings.baselineSgt)
-      if (Number.isFinite(settings.cycleMs) && settings.cycleMs > 0) setCycleMs(settings.cycleMs)
-    })
+      createEffect(() => {
+        if (typeof settings.baselineSgt === "string" && parseSgt(settings.baselineSgt) !== null) setBaselineSgt(settings.baselineSgt)
+        if (Number.isFinite(settings.cycleMs) && settings.cycleMs > 0) setCycleMs(settings.cycleMs)
+      })
 
-    createEffect(() => {
-      const id = sessionID()
-      if (!id) return
-      let messages: readonly SessionMessageInfo[] = []
-      try {
-        messages = api.data.session.message.list(id)
-      } catch {
-        return
-      }
-      const resetMessage = scanMessageParts(messages, RESET_PARSE_RE)
-      const reset = resetMessage?.match(RESET_PARSE_RE)?.[1]
-      if (reset && reset !== baselineSgt()) {
-        setBaselineSgt(reset)
+      createEffect(() => {
+        const id = sessionID()
+        if (!id) return
+        let messages: readonly SessionMessageInfo[] = []
         try {
-          void updateSettings((draft) => { draft.baselineSgt = reset }).catch(() => {})
+          messages = api.data.session.message.list(id)
         } catch {
-          // The reset fallback remains in memory if persistence is unavailable.
+          return
         }
+        const resetMessage = scanMessageParts(messages, RESET_PARSE_RE)
+        const reset = resetMessage?.match(RESET_PARSE_RE)?.[1]
+        if (reset && reset !== baselineSgt()) {
+          setBaselineSgt(reset)
+          try {
+            void updateSettings((draft) => { draft.baselineSgt = reset }).catch(() => {})
+          } catch {
+            // The reset fallback remains in memory if persistence is unavailable.
+          }
+        }
+        const retryMessage = scanMessageParts(messages, RETRY_AFTER_RE)
+        const match = retryMessage?.match(RETRY_AFTER_RE)
+        const seconds = (match?.[1] ? Number.parseInt(match[1]) * 3_600 : 0) + (match?.[2] ? Number.parseInt(match[2]) * 60 : 0) + (match?.[3] ? Number.parseInt(match[3]) : 0)
+        setRetryAfterEpoch(seconds > 0 ? Date.now() + seconds * 1_000 : null)
+      })
+
+      createEffect(() => {
+        const published = quotaState()
+        const generation = published?.generation ?? engine.helpers.credentialGeneration()
+        if (published && generation !== engine.helpers.credentialGeneration()) return
+        const epoch = published?.data.tokenNextResetEpoch ?? retryAfterEpoch() ?? 0
+        if (epoch <= 0) return
+        const refreshed = engine.helpers.refreshedBoundary()
+        const pending = engine.helpers.pendingBoundary()
+        if (
+          (refreshed?.generation === generation && refreshed.epoch === epoch)
+          || (pending?.generation === generation && pending.epoch === epoch)
+        ) return
+        engine.helpers.scheduleRefreshAt(epoch)
+      })
+
+      return {
+        id: "zai",
+        order: PROVIDER_ORDER,
+        panel: () => mapZaiPanelState({ phase: phase(), data: quotaData(), retryAfterEpoch: retryAfterEpoch(), baselineSgt: baselineSgt(), cycleMs: cycleMs(), hideTools: options.hideTools, now: now() }),
+        home: () => phase() === "ready" && quotaData() ? zaiHomeQuotaSummary(quotaData()!) : null,
+        quotaSummary: () => quotaData() ? zaiHomeQuotaSummary(quotaData()!) : null,
+        configured: transport.configured,
+        freshness: () => freshnessFor(phase()),
+        refresh: engine.refresh,
+        setSessionID(id: string): void {
+          if (!providerDisposed) setLocalSessionID(id)
+        },
+        dispose: engine.dispose,
       }
-      const retryMessage = scanMessageParts(messages, RETRY_AFTER_RE)
-      const match = retryMessage?.match(RETRY_AFTER_RE)
-      const seconds = (match?.[1] ? Number.parseInt(match[1]) * 3_600 : 0) + (match?.[2] ? Number.parseInt(match[2]) * 60 : 0) + (match?.[3] ? Number.parseInt(match[3]) : 0)
-      setRetryAfterEpoch(seconds > 0 ? Date.now() + seconds * 1_000 : null)
     })
-
-    createEffect(() => {
-      const published = quotaState()
-      const generation = published?.generation ?? engine.helpers.credentialGeneration()
-      if (published && generation !== engine.helpers.credentialGeneration()) return
-      const epoch = published?.data.tokenNextResetEpoch ?? retryAfterEpoch() ?? 0
-      if (epoch <= 0) return
-      const refreshed = engine.helpers.refreshedBoundary()
-      const pending = engine.helpers.pendingBoundary()
-      if (
-        (refreshed?.generation === generation && refreshed.epoch === epoch)
-        || (pending?.generation === generation && pending.epoch === epoch)
-      ) return
-      engine.helpers.scheduleRefreshAt(epoch)
-    })
-
-    return {
-      id: "zai",
-      order: PROVIDER_ORDER,
-      panel: () => mapZaiPanelState({ phase: phase(), data: quotaData(), retryAfterEpoch: retryAfterEpoch(), baselineSgt: baselineSgt(), cycleMs: cycleMs(), hideTools: options.hideTools, now: now() }),
-      home: () => phase() === "ready" && quotaData() ? zaiHomeQuotaSummary(quotaData()!) : null,
-      quotaSummary: () => quotaData() ? zaiHomeQuotaSummary(quotaData()!) : null,
-      configured: transport.configured,
-      freshness: () => freshnessFor(phase()),
-      refresh: engine.refresh,
-      setSessionID(id: string): void {
-        if (!providerDisposed) setLocalSessionID(id)
-      },
-      dispose: engine.dispose,
+  } catch (error) {
+    // The hub cannot own an adapter until this factory returns successfully.
+    for (const cleanup of [disposeEngine, disposeRoot]) {
+      try { cleanup?.() } catch { /* Preserve the setup error while attempting both owners. */ }
     }
-  })
+    throw error
+  }
 }

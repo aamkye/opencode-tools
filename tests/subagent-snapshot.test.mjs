@@ -33,6 +33,7 @@ test("forwards parent and attempt signals and cancels active native requests", a
   const controller = new AbortController()
   const received = []
   const loader = createSubagentSnapshotLoader({
+    getSession: async (id) => session(id, undefined, 0),
     async listSessions(signal) { received.push(signal); return [session("child", "root", 0)] },
     sessionStatus() { return "running" },
     listMessages(id, signal) {
@@ -49,12 +50,13 @@ test("forwards parent and attempt signals and cancels active native requests", a
   await rejected
 })
 
-test("returns a complete empty snapshot without message calls", async () => {
+test("returns a complete empty snapshot for an existing childless parent without a get or message call", async () => {
   const statusCalls = []
   const messageCalls = []
   const discoveries = []
   const loader = createSubagentSnapshotLoader({
-    async listSessions() { return [session("unrelated", "other", 1)] },
+    async getSession() { assert.fail("listed parent needs no lookup") },
+    async listSessions() { return [session("root", undefined, 0), session("unrelated", "other", 1)] },
     sessionStatus(sessionID) {
       statusCalls.push(sessionID)
       return "idle"
@@ -73,6 +75,54 @@ test("returns a complete empty snapshot without message calls", async () => {
   assert.deepEqual(messageCalls, [])
 })
 
+test("resolves an omitted parent through getSession before publishing child IDs", async () => {
+  const events = []
+  const loadContext = context((ids) => events.push(["children", ...ids]))
+  const loader = createSubagentSnapshotLoader({
+    async listSessions() { return [] },
+    async getSession(id, signal) {
+      assert.equal(signal, loadContext.signal)
+      events.push(["get", id])
+      return session(id, undefined, 0)
+    },
+    sessionStatus() { assert.fail("no children") },
+    async listMessages() { assert.fail("no children") },
+  })
+  assert.deepEqual(await loader("root", loadContext), { parentID: "root", childIDs: [], children: [] })
+  assert.deepEqual(events, [["get", "root"], ["children"]])
+})
+
+for (const children of [[], [session("orphan", "missing", 1)]]) {
+  test(`a missing parent rejects before child discovery or messages (${children.length} listed children)`, async () => {
+    const failure = new Error("Session not found")
+    const loader = createSubagentSnapshotLoader({
+      async listSessions() { return children },
+      async getSession() { throw failure },
+      sessionStatus() { assert.fail("missing parent must prevent status reads") },
+      async listMessages() { assert.fail("missing parent must prevent message reads") },
+    })
+    await assert.rejects(loader("missing", context(() => assert.fail("missing parent must prevent discovery"))), (error) => error === failure)
+  })
+}
+
+test("cancels parent validation without publishing late successful topology", async () => {
+  const controller = new AbortController()
+  const parent = deferred()
+  let received
+  const loader = createSubagentSnapshotLoader({
+    async listSessions() { return [] },
+    getSession(_id, signal) { received = signal; return parent.promise },
+    sessionStatus() { assert.fail("no children") },
+    async listMessages() { assert.fail("no children") },
+  })
+  const pending = loader("root", { signal: controller.signal, onChildIDs() { assert.fail("aborted topology") } })
+  await settle()
+  assert.equal(received, controller.signal)
+  controller.abort()
+  parent.resolve(session("root", undefined, 0))
+  await assert.rejects(pending, /abort/i)
+})
+
 test("requests only sorted direct children and never requests grandchildren", async () => {
   const sessions = [
     session("child-b", "root", 2),
@@ -84,6 +134,7 @@ test("requests only sorted direct children and never requests grandchildren", as
   const statusCalls = []
   const messageCalls = []
   const loader = createSubagentSnapshotLoader({
+    getSession: async (id) => session(id, undefined, 0),
     async listSessions() { return sessions },
     sessionStatus(sessionID) {
       statusCalls.push(sessionID)
@@ -107,6 +158,7 @@ test("requests only sorted direct children and never requests grandchildren", as
 test("publishes discovered child IDs before status or message fan-out", async () => {
   const events = []
   const loader = createSubagentSnapshotLoader({
+    getSession: async (id) => session(id, undefined, 0),
     async listSessions() {
       return [session("child-b", "root", 1), session("child-a", "root", 1)]
     },
@@ -134,6 +186,7 @@ test("keeps sorted output when child requests finish in reverse", async () => {
     ["child-b", undefined],
   ])
   const loader = createSubagentSnapshotLoader({
+    getSession: async (id) => session(id, undefined, 0),
     async listSessions() {
       return [
         session("child-b", "root", 1),
@@ -168,6 +221,7 @@ test("shares four message slots across overlapping generations", async () => {
   let maximum = 0
   const messageCalls = []
   const loader = createSubagentSnapshotLoader({
+    getSession: async (id) => session(id, undefined, 0),
     async listSessions() {
       return [
         ...Array.from({ length: 6 }, (_, index) => session(`old-${index}`, "old", index)),
@@ -205,6 +259,7 @@ test("aborted queued work rejects without starting an SDK call", async () => {
   const activeRequest = deferred()
   const messageCalls = []
   const loader = createSubagentSnapshotLoader({
+    getSession: async (id) => session(id, undefined, 0),
     async listSessions() {
       return [session("active-child", "active", 1), session("queued-child", "queued", 1)]
     },
@@ -239,6 +294,7 @@ test("one failure stops new claims and waits for active requests", async () => {
   const messageCalls = []
   let settled = false
   const loader = createSubagentSnapshotLoader({
+    getSession: async (id) => session(id, undefined, 0),
     async listSessions() {
       return [
         session("child-a", "root", 4),
@@ -271,6 +327,7 @@ test("list status or message failure rejects without a partial snapshot", async 
     await t.test(failure, async () => {
       let snapshot
       const loader = createSubagentSnapshotLoader({
+        getSession: async (id) => session(id, undefined, 0),
         async listSessions() {
           if (failure === "list") throw new Error("list failed")
           return [session("child", "root", 1)]

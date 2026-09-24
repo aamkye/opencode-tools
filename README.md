@@ -35,15 +35,17 @@ without the Quota panel; keep the quota server companion registered.
 
 ### Context
 
-Active-session context and spend from native synchronized messages and model
-metadata, without polling. Tokens use the newest assistant message with a
-positive sum of input, output, reasoning, cache read, and cache write. Spent sums
-finite assistant-message costs for the selected session.
+Active-session context and spend from native synchronized session, message, and
+model metadata, without polling. Tokens use the newest assistant message with a
+positive sum of input, output, reasoning, cache read, and cache write. Spent uses
+the selected session's own finite accumulated cost. Loading older transcript
+pages leaves Spent unchanged, and descendant costs belong to their own sessions.
 
 When consumed tokens are known but the model context limit is unavailable, the
 panel preserves the known `Tokens` value and accumulated `Spent`, while `Limit`,
-`Used`, and the collapsed summary remain `-`. Without usable data it shows
-`Tokens -`, `Used -`, and `Spent $0.00`.
+`Used`, and the collapsed summary remain `-`. Without token-bearing messages,
+`Tokens` and `Used` remain `-` while known session spend is preserved. Missing or
+non-finite session cost displays `Spent $0.00`.
 
 Used is green below 40%, yellow from 40% through 60%, and red above 60%.
 Only a zero `$0.00` spend value is muted.

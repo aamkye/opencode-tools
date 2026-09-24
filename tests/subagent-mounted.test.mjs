@@ -165,6 +165,85 @@ test("renders muted No subagents for a complete empty snapshot", async () => {
   }
 })
 
+test("a native missing parent exhausts retries without rendering No subagents or pruning durable failures", async () => {
+  const evidence = { failures: { "parent-a": { "subagent-9": 42 }, other: { child: 99 } } }
+  const mounted = await mountSubagentPanel({
+    parentID: "parent-a", store: new Map([[subagentFailureKey, evidence]]),
+    getSession: async () => { throw new Error("Session not found") },
+  })
+  try {
+    await mounted.resolveList({ data: [] })
+    assert.equal(mounted.view().panelExists, false)
+    for (const delay of [2_000, 4_000, 8_000]) {
+      assert.deepEqual(mounted.pendingDelays(), [delay])
+      await mounted.runTimer(delay)
+      await mounted.resolveList({ data: [] })
+    }
+    assert.equal(mounted.view().panelExists, false)
+    assert.equal(mounted.view().fallbackText, "")
+    assert.deepEqual(mounted.pendingDelays(), [])
+    assert.deepEqual(mounted.getCalls.map(({ sessionID }) => sessionID), Array(4).fill("parent-a"))
+    assert.ok(mounted.getCalls.every(({ signal }) => signal === mounted.signals[0]))
+    assert.deepEqual(mounted.messageCalls, [])
+    assert.deepEqual(mounted.kvWrites, [])
+    assert.deepEqual(mounted.store.get(subagentFailureKey), evidence)
+  } finally { await mounted.dispose() }
+})
+
+test("a missing-parent refresh retains the mounted snapshot and failures until a successful recovery", async () => {
+  const evidence = { failures: { "parent-a": { "subagent-9": 20_000_000 } } }
+  const mounted = await mountSubagentPanel({
+    parentID: "parent-a", store: new Map([[subagentFailureKey, evidence]]),
+    getSession: async () => { throw new Error("Session not found") },
+  })
+  try {
+    await mounted.resolveReady([canonicalChildren[2]])
+    const ready = mounted.view().lines
+    assert.deepEqual(mounted.getCalls, [], "the listed parent requires no lookup")
+    mounted.emit({ type: "server.connected", data: {} })
+    await mounted.runTimer(200)
+    await mounted.resolveList({ data: [] })
+    for (const delay of [2_000, 4_000, 8_000]) {
+      assert.deepEqual(mounted.view().lines, ready)
+      assert.deepEqual(mounted.store.get(subagentFailureKey), evidence)
+      await mounted.runTimer(delay)
+      await mounted.resolveList({ data: [] })
+    }
+    assert.equal(mounted.view().detailText, "stale")
+    assert.deepEqual(mounted.view().lines.slice(1), ready.slice(1))
+    assert.equal(mounted.view().entryRows[0].durationColor, "#ff0000")
+    assert.deepEqual(mounted.store.get(subagentFailureKey), evidence)
+    assert.deepEqual(mounted.kvWrites, [])
+    mounted.emit({ type: "server.connected", data: {} })
+    await mounted.runTimer(200)
+    await mounted.resolveReady([])
+    assert.equal(mounted.view().fallbackText, "No subagents")
+    assert.equal(mounted.view().detailText, "")
+    assert.deepEqual(mounted.store.get(subagentFailureKey), { failures: {} })
+  } finally { await mounted.dispose() }
+})
+
+test("native parent lookup cancellation prevents an unmounted view from pruning failures", async () => {
+  let resolveParent
+  const pending = new Promise((resolve) => { resolveParent = resolve })
+  const evidence = { failures: { "parent-a": { "subagent-9": 42 } } }
+  const mounted = await mountSubagentPanel({
+    parentID: "parent-a", store: new Map([[subagentFailureKey, evidence]]), getSession: () => pending,
+  })
+  try {
+    await mounted.resolveList({ data: [] })
+    assert.equal(mounted.getCalls.length, 1)
+    assert.equal(mounted.getCalls[0].signal, mounted.signals[0])
+    mounted.unmount()
+    assert.equal(mounted.getCalls[0].signal.aborted, true)
+    resolveParent({ id: "parent-a" })
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(mounted.kvWrites, [])
+    assert.deepEqual(mounted.store.get(subagentFailureKey), evidence)
+    assert.deepEqual(mounted.pendingDelays(), [])
+  } finally { await mounted.dispose() }
+})
+
 test("matches every expanded AGENTS layout and exact row order", async () => {
   const mounted = await mountSubagentPanel({ parentID: "parent-a" })
   try {

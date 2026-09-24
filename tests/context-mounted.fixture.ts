@@ -1,4 +1,4 @@
-import type { LocationRef, ModelInfo, SessionMessageInfo } from "@opencode/client"
+import type { LocationRef, ModelInfo, SessionInfo, SessionMessageInfo } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { SlotClaim } from "@opencode/plugin/tui/context"
 import { RGBA } from "@opentui/core"
@@ -6,6 +6,17 @@ import { createSignal } from "solid-js"
 
 import contextPlugin from "../tui/context.js"
 import { createHostNode, render, type HostNode } from "./opentui-solid-host-runtime.fixture.js"
+
+export { createData } from "@opencode/client/solid"
+export { createRoot } from "solid-js"
+
+export function contextSession(id: string, cost: number, parentID?: string): SessionInfo {
+  return {
+    id, parentID, cost, projectID: "prj_test", location: { directory: "/test" },
+    time: { created: 1, updated: 1 },
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  }
+}
 
 export const colors = {
   error: RGBA.fromHex("#ff0000"), warning: RGBA.fromHex("#ffaa00"), success: RGBA.fromHex("#00ff00"),
@@ -36,6 +47,8 @@ function textOf(node: HostNode | undefined): string {
 export async function mountContextPanel(options: {
   sessionID?: string
   sessions?: ReadonlyMap<string, SessionMessageInfo[]>
+  sessionCosts?: ReadonlyMap<string, number>
+  sessionData?: Plugin.Context["data"]["session"]
   models?: ModelInfo[]
   location?: LocationRef
   defaultLocation?: LocationRef
@@ -44,11 +57,13 @@ export async function mountContextPanel(options: {
 } = {}) {
   const [sessionID, setSessionID] = createSignal(options.sessionID)
   const [sessions, setSessions] = createSignal(options.sessions ?? new Map<string, SessionMessageInfo[]>())
+  const [sessionCosts, setSessionCosts] = createSignal(options.sessionCosts ?? new Map<string, number>())
   const [models, setModels] = createSignal(options.models)
   const [defaultLocation, setDefaultLocation] = createSignal(options.defaultLocation ?? { directory: "/default" })
   const [errorColor, setErrorColor] = createSignal(colors.error)
   const storageCalls: string[] = []
   const messageCalls: string[] = []
+  const sessionCalls: string[] = []
   const modelCalls: Array<LocationRef | undefined> = []
   const registrations: SlotClaim[] = []
   const disposedSlots: Array<string | undefined> = []
@@ -72,7 +87,10 @@ export async function mountContextPanel(options: {
     options: { defaultState: options.defaultState, chip: options.chip },
     location: options.location,
     data: {
-      session: { message: { list: listMessages } },
+      session: options.sessionData ?? {
+        get(id: string) { sessionCalls.push(id); return contextSession(id, sessionCosts().get(id) ?? 0) },
+        message: { list: listMessages },
+      },
       location: { default: defaultLocation, model: { list: listModels } },
     },
     ui: { slot },
@@ -144,12 +162,15 @@ export async function mountContextPanel(options: {
 
   return {
     pluginID: contextPlugin.id,
-    registrations, disposedSlots, storageCalls, messageCalls, modelCalls,
+    registrations, disposedSlots, storageCalls, messageCalls, sessionCalls, modelCalls,
     slotMounts: () => slotMounts,
     chipMounts: () => chipMounts,
     setSessionID,
     setMessages(id: string, messages: SessionMessageInfo[]) {
       setSessions((current) => new Map(current).set(id, messages))
+    },
+    setSessionCost(id: string, cost: number) {
+      setSessionCosts((current) => new Map(current).set(id, cost))
     },
     setModels, setDefaultLocation, setErrorColor, view,
     chipView() {

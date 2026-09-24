@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-const { mountContextPanel, contextModel, colors } = await import("../.tmp-test/context-mounted.mjs")
+const { mountContextPanel, contextModel, contextSession, createData, createRoot, colors } = await import("../.tmp-test/context-mounted.mjs")
 const message = ({ input = 205_000, cost = 1.25 } = {}) => ({
   id: "msg_usage", type: "assistant", agent: "general", content: [], time: { created: 1 },
   model: { providerID: "openai", id: "gpt" },
@@ -9,9 +9,10 @@ const message = ({ input = 205_000, cost = 1.25 } = {}) => ({
   tokens: { input, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
 })
 const sessions = new Map([["session-a", [message()]]])
+const sessionCosts = new Map([["session-a", 1.25], ["session-b", 0.5]])
 
 test("registers native Context sidebar and footer slots and renders the expanded metric contract", async () => {
-  const mounted = await mountContextPanel({ sessionID: "session-a", sessions, models: [contextModel()] })
+  const mounted = await mountContextPanel({ sessionID: "session-a", sessions, sessionCosts, models: [contextModel()] })
   try {
     const view = mounted.view()
     assert.equal(mounted.pluginID, "aamkye.opencode-tools-context")
@@ -50,6 +51,7 @@ test("renders and collapses unavailable state without an empty-session host call
   const mounted = await mountContextPanel()
   try {
     assert.deepEqual(mounted.messageCalls, [])
+    assert.deepEqual(mounted.sessionCalls, [])
     assert.deepEqual(mounted.view().rows.map(({ label, value }) => [label, value]), [
       ["Limit", "-"], ["Tokens", "-"], ["Used", "-"], ["Spent", "$0.00"],
     ])
@@ -64,19 +66,21 @@ test("switches native session props and reacts to messages and models without re
     ["session-a", [message()]],
     ["session-b", [message({ input: 50_000, cost: 0.5 })]],
   ])
-  const mounted = await mountContextPanel({ sessionID: "session-a", sessions: initial, models: [contextModel()] })
+  const mounted = await mountContextPanel({ sessionID: "session-a", sessions: initial, sessionCosts, models: [contextModel()] })
   try {
     const panel = mounted.view().panel
     assert.equal(mounted.view().rows[2].value, "64%")
     mounted.setSessionID("session-b")
     assert.deepEqual(mounted.view().rows.map((row) => row.value), ["322K", "50K", "16%", "$0.50"])
     mounted.setMessages("session-b", [message({ input: 100_000, cost: 0.75 })])
+    mounted.setSessionCost("session-b", 0.75)
     assert.equal(mounted.view().rows[2].value, "31%")
     mounted.setModels([contextModel(200_000)])
     assert.deepEqual(mounted.view().rows.map((row) => row.value), ["200K", "100K", "50%", "$0.75"])
     mounted.setSessionID()
     assert.deepEqual(mounted.view().rows.map((row) => row.value), ["-", "-", "-", "$0.00"])
     assert.equal(mounted.messageCalls.includes(""), false)
+    assert.equal(mounted.sessionCalls.includes(""), false)
     assert.equal(mounted.slotMounts(), 1)
     assert.equal(mounted.view().panel, panel)
   } finally { await mounted.dispose() }
@@ -110,7 +114,7 @@ test("unregisters both native Context slots exactly once", async () => {
 
 test("preserves accounting until location models hydrate and uses the native location fallback", async () => {
   for (const location of [undefined, { directory: "/plugin", workspaceID: "workspace" }]) {
-    const mounted = await mountContextPanel({ sessionID: "session-a", sessions, location })
+    const mounted = await mountContextPanel({ sessionID: "session-a", sessions, sessionCosts, location })
     try {
       assert.deepEqual(mounted.view().rows.map((row) => row.value), ["-", "205K", "-", "$1.25"])
       assert.equal(mounted.chipView().text, "")
@@ -161,5 +165,43 @@ test("honors native Context chip=disabled options", async () => {
   try {
     assert.equal(mounted.chipView().text, "")
     assert.equal(mounted.view().rows[2].value, "64%")
+  } finally { await mounted.dispose() }
+})
+
+test("native transcript pagination leaves own-session Spent invariant and excludes descendant cost", async (t) => {
+  const requests = []
+  const newest = { ...message({ cost: 1 }), id: "msg_new" }
+  const oldest = { ...message({ cost: 9 }), id: "msg_old" }
+  const data = createRoot((dispose) => {
+    t.after(dispose)
+    return createData({
+      directory: "/test", initialMessageLimit: () => 1,
+      event: { on: () => () => {}, listen: () => () => {} },
+      api: () => ({ message: { list: async (input) => {
+        requests.push(input)
+        return input.cursor ? { data: [oldest], cursor: {} } : { data: [newest], cursor: { next: "older" } }
+      } } }),
+    })
+  })
+  data.session.remember(contextSession("session-a", 10))
+  data.session.remember(contextSession("child", 40, "session-a"))
+  await data.session.message.sync("session-a")
+  assert.equal(data.session.cost("session-a"), 50, "native family cost includes the child")
+  assert.equal(data.session.message.list("session-a").length, 1)
+  const mounted = await mountContextPanel({ sessionID: "session-a", sessionData: data.session })
+  try {
+    assert.deepEqual(mounted.view().rows.map((row) => row.value), ["-", "205K", "-", "$10.00"])
+    await data.session.message.loadMore("session-a")
+    assert.equal(data.session.message.list("session-a").length, 2)
+    assert.equal(mounted.view().rows[3].value, "$10.00")
+    assert.equal(requests[0].limit, 1)
+    assert.equal(requests[1].cursor, "older")
+    data.session.remember(contextSession("session-a", 12))
+    assert.equal(mounted.view().rows[3].value, "$12.00")
+    mounted.setModels([contextModel()])
+    assert.equal(mounted.chipView().text, " Ctx 64%")
+    mounted.setSessionID("child")
+    assert.equal(mounted.view().rows[3].value, "$40.00")
+    assert.equal(mounted.slotMounts(), 1)
   } finally { await mounted.dispose() }
 })

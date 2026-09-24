@@ -27,6 +27,7 @@ export type SubagentSnapshotLoader = (
 
 export type CreateSubagentSnapshotLoaderOptions = {
   listSessions(signal: AbortSignal): Promise<readonly SubagentChildSnapshot["session"][]>
+  getSession(sessionID: string, signal: AbortSignal): Promise<SubagentChildSnapshot["session"]>
   sessionStatus(sessionID: string): SubagentChildSnapshot["status"]
   listMessages(sessionID: string, signal: AbortSignal): Promise<readonly SessionMessageInfo[]>
   concurrency?: number
@@ -118,6 +119,10 @@ export function createSubagentSnapshotLoader(
     throwIfAborted(context.signal)
     const sessions = await options.listSessions(context.signal)
     throwIfAborted(context.signal)
+    if (!sessions.some((session) => session.id === parentID)) {
+      await options.getSession(parentID, context.signal)
+      throwIfAborted(context.signal)
+    }
     const children = ([
       ...(indexSessionsByParent(sessions).get(parentID) ?? []),
     ] as SubagentChildSnapshot["session"][])

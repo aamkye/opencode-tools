@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -41,6 +41,7 @@ test("tracked current files contain no active legacy project identifier", () => 
 })
 
 test("documented native configuration deploys unchanged and resolves every package export", async (t) => {
+  await mkdir(join(tmpdir(), "opencode"), { recursive: true })
   const root = await mkdtemp(join(tmpdir(), "opencode", "opencode-tools-docs-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   const readme = readFileSync("README.md", "utf8")

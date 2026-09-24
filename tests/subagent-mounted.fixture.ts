@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js/dist/solid.js"
 import { createStore, produce } from "solid-js/store"
 import type { Plugin } from "@opencode/plugin/tui"
+import type { SessionInfo } from "@opencode/client"
 import type { SlotClaim } from "@opencode/plugin/tui/context"
 import stringWidth from "string-width"
 
@@ -301,11 +302,13 @@ export async function mountSubagentPanel(options: {
   chip?: "enabled" | "disabled"
   rejectStorage?: boolean
   deferStorage?: boolean
+  getSession?: (sessionID: string, signal: AbortSignal) => Promise<SessionInfo>
 } = {}) {
   const store = options.store ?? new Map<string, unknown>()
   const kvReads: string[] = []
   const kvWrites: Array<[string, unknown]> = []
   const listCalls: unknown[] = []
+  const getCalls: Array<{ sessionID: string; signal: AbortSignal }> = []
   const messageCalls: Array<{ sessionID: string; cursor?: string }> = []
   const signals: AbortSignal[] = []
   const statusCalls: string[] = []
@@ -387,6 +390,16 @@ export async function mountSubagentPanel(options: {
     },
     client: {
       session: {
+        async get(input: { sessionID: string }, request: { signal: AbortSignal }) {
+          getCalls.push({ ...input, ...request })
+          signals.push(request.signal)
+          if (options.getSession) return options.getSession(input.sessionID, request.signal)
+          return {
+            id: input.sessionID, projectID: "prj_test", location: { directory: "/test" },
+            cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            time: { created: 0, updated: 0 },
+          } satisfies SessionInfo
+        },
         list(input: unknown, request: { signal: AbortSignal }) {
           listCalls.push(input)
           signals.push(request.signal)
@@ -614,6 +627,7 @@ export async function mountSubagentPanel(options: {
     kvWrites,
     store,
     listCalls,
+    getCalls,
     messageCalls,
     statusCalls,
     routeCalls,

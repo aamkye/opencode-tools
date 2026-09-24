@@ -39,7 +39,8 @@ const plugin = defineTuiPlugin(descriptor, (scope, api) => {
   function ContextChip(props: { sessionID?: string }) {
     const model = createMemo(() => {
       const messages = props.sessionID ? api.data.session.message.list(props.sessionID) : []
-      return createContextPanelModel(messages, api.data.location.model.list(location()) ?? [])
+      const cost = props.sessionID ? api.data.session.get(props.sessionID)?.cost : undefined
+      return createContextPanelModel(messages, api.data.location.model.list(location()) ?? [], cost)
     })
     return (
       <Show when={model().summary !== "-"}>
@@ -60,7 +61,8 @@ const plugin = defineTuiPlugin(descriptor, (scope, api) => {
     })
     const model = createMemo(() => {
       const messages = props.sessionID ? api.data.session.message.list(props.sessionID) : []
-      return createContextPanelModel(messages, api.data.location.model.list(location()) ?? [])
+      const cost = props.sessionID ? api.data.session.get(props.sessionID)?.cost : undefined
+      return createContextPanelModel(messages, api.data.location.model.list(location()) ?? [], cost)
     })
     const toggle = () => setCollapsed((current) => !current)
     return (
