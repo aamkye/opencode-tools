@@ -1,12 +1,11 @@
 import manifest from "../../plugin-manifest.json"
 
-export type PluginKey = "quota" | "home" | "token-report" | "mcp" | "context" | "lsp" | "todo" | "ses-tokens" | "subagent"
+export type PluginKey = "quota" | "home" | "token-report" | "mcp" | "context" | "ses-tokens" | "subagent"
 export type PluginManifestEntry = {
   key: PluginKey
   id: string
   source: string
   outfile: string
-  slotOrder?: number
   options: "quota" | "defaultState" | "none"
 }
 

@@ -19,9 +19,6 @@ export function validatePluginManifest(entries) {
     }
 
     if (!validOptions.has(entry.options)) throw new TypeError(`invalid options at index ${index}`)
-    if (entry.slotOrder !== undefined && !Number.isFinite(entry.slotOrder)) {
-      throw new TypeError(`invalid slotOrder at index ${index}`)
-    }
   }
 }
 

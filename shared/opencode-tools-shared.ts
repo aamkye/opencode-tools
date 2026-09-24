@@ -8,7 +8,6 @@ import {
   selectedSessionQuotaProviderID,
 } from "../tui/features/quota.js";
 import { createOpenCodeGoProvider } from "../tui/providers/opencode-go.js";
-import { pluginDescriptor } from "../tui/runtime/manifest.js";
 import { createZaiProvider } from "../tui/providers/zai.js";
 
 export { CompactPanel, CompactStatusRow, StatusChip } from "../tui/presentation/compact-panel.js";
@@ -30,10 +29,6 @@ export type {
   ContextPanelModel,
   ContextProvider,
 } from "../tui/features/context.js";
-export { createLspPanelModel } from "../tui/features/lsp.js";
-export type { LspPanelModel, LspStatusRow } from "../tui/features/lsp.js";
-export { createTodoPanelModel } from "../tui/features/todo.js";
-export type { TodoPanelModel, TodoStatusRole, TodoStatusRow } from "../tui/features/todo.js";
 export { createSesTokensPanelModel } from "../tui/features/ses-tokens.js";
 export type { SesTokenTotals, SesTokensMessage, SesTokensPanelModel } from "../tui/features/ses-tokens.js";
 export { allocateSubagentEntryRow, createSubagentPanelModel } from "../tui/features/subagent.js";
@@ -147,7 +142,6 @@ export {
 } from "../tui/features/token-report.js";
 
 export type QuotaAdapterShared = {
-  sidebarSlotOrder: typeof quotaSidebarSlotOrder;
   normalizeOptions: typeof normalizeQuotaOptions;
   composePanel: typeof composeQuotaPanel;
   createSelection: typeof createQuotaSelection;
@@ -157,10 +151,7 @@ export type QuotaAdapterShared = {
   createOpenCodeGoProvider: typeof createOpenCodeGoProvider;
 };
 
-export const quotaSidebarSlotOrder = pluginDescriptor("quota").slotOrder;
-
 export const quotaAdapterShared: QuotaAdapterShared = {
-  sidebarSlotOrder: quotaSidebarSlotOrder,
   normalizeOptions: normalizeQuotaOptions,
   composePanel: composeQuotaPanel,
   createSelection: createQuotaSelection,
@@ -187,6 +178,7 @@ export type {
   TokenReportData,
 } from "../lib/tokens/token-report-data";
 export { acquireService, defineTuiPlugin } from "../tui/runtime/plugin.js";
+export { panelTheme } from "../tui/runtime/theme.js";
 export type { FeatureActivation, ServiceFactory, ServiceKey, ServiceLease, ServiceValue, TuiFeatureContext } from "../tui/runtime/plugin.js";
 export { pluginDescriptor, pluginManifest } from "../tui/runtime/manifest.js";
 export type { PluginKey, PluginManifestEntry } from "../tui/runtime/manifest.js";

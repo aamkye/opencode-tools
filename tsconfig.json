@@ -19,12 +19,13 @@
     "isolatedModules": true
   },
   "include": [
-    "opencode-plugin-tui.d.ts",
-    "lib/session-rename.ts",
+    "lib/**/*.ts",
+    "quota-service.ts",
     "session-rename.ts",
     "tui/**/*.ts",
     "tui/**/*.tsx",
     "shared/**/*.ts",
-    "tests/*-state-types.fixture.ts"
+    "tests/*-state-types.fixture.ts",
+    "tests/*-contract.fixture.ts"
   ]
 }

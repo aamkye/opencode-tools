@@ -4,7 +4,6 @@
     "id": "aamkye/opencode-tools-home",
     "source": "tui/home.tsx",
     "outfile": "opencode-tools-home.js",
-    "slotOrder": 1,
     "options": "none"
   },
   {
@@ -19,7 +18,6 @@
     "id": "aamkye/opencode-tools-context",
     "source": "tui/context.tsx",
     "outfile": "opencode-tools-context.js",
-    "slotOrder": 100,
     "options": "defaultState"
   },
   {
@@ -27,7 +25,6 @@
     "id": "aamkye/opencode-tools-ses-tokens",
     "source": "tui/ses-tokens.tsx",
     "outfile": "opencode-tools-ses-tokens.js",
-    "slotOrder": 110,
     "options": "defaultState"
   },
   {
@@ -35,7 +32,6 @@
     "id": "aamkye/opencode-tools-subagent",
     "source": "tui/subagent.tsx",
     "outfile": "opencode-tools-subagent.js",
-    "slotOrder": 120,
     "options": "defaultState"
   },
   {
@@ -43,7 +39,6 @@
     "id": "aamkye/opencode-tools-quota",
     "source": "tui/quota.tsx",
     "outfile": "opencode-tools-quota.js",
-    "slotOrder": 130,
     "options": "quota"
   },
   {
@@ -51,23 +46,6 @@
     "id": "aamkye/opencode-tools-mcp",
     "source": "tui/mcp.tsx",
     "outfile": "opencode-tools-mcp.js",
-    "slotOrder": 140,
-    "options": "defaultState"
-  },
-  {
-    "key": "lsp",
-    "id": "aamkye/opencode-tools-lsp",
-    "source": "tui/lsp.tsx",
-    "outfile": "opencode-tools-lsp.js",
-    "slotOrder": 150,
-    "options": "defaultState"
-  },
-  {
-    "key": "todo",
-    "id": "aamkye/opencode-tools-todo",
-    "source": "tui/todo.tsx",
-    "outfile": "opencode-tools-todo.js",
-    "slotOrder": 160,
     "options": "defaultState"
   }
 ]

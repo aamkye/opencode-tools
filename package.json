@@ -11,9 +11,7 @@
     "./ses-tokens": "./tui/ses-tokens.tsx",
     "./subagent": "./tui/subagent.tsx",
     "./quota": "./tui/quota.tsx",
-    "./mcp": "./tui/mcp.tsx",
-    "./lsp": "./tui/lsp.tsx",
-    "./todo": "./tui/todo.tsx"
+    "./mcp": "./tui/mcp.tsx"
   },
   "files": [
     "dist",
@@ -41,14 +39,17 @@
   ],
   "license": "MIT",
   "engines": {
-    "opencode": ">=1.18.1"
+    "opencode": ">=2.0.16"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.3.3",
-    "@opentui/core": "^0.4.2",
-    "@opentui/solid": "^0.4.2",
+    "@opencode/client": "2.0.16",
+    "@opencode/plugin": "2.0.16",
+    "@opencode/theme": "2.0.16",
+    "@opentui/core": "0.5.10",
+    "@opentui/solid": "0.5.10",
     "solid-js": "^1.9.12",
-    "string-width": "7.2.0"
+    "string-width": "7.2.0",
+    "zod": "4.1.8"
   },
   "devDependencies": {
     "@babel/core": "^7.28.0",
