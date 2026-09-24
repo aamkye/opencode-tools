@@ -8,12 +8,11 @@ import {
   type TokenReportCommandId,
 } from "./token-commands";
 import {
-  aggregateUsage,
-  resolveSessionTree,
   SessionNotFoundError,
   type AggregateResult,
   type SessionTreeNode,
 } from "./quota-stats";
+import type { UsageQuery } from "./usage-source.js";
 
 export type TokenReportData =
   | {
@@ -39,7 +38,6 @@ export type TokenReportData =
       generatedAtMs: number;
       sessionID: string;
       message: string;
-      checkedPath: string;
     }
   | {
       kind: "unknown_command";
@@ -54,13 +52,8 @@ export type ComputeTokenReportParams = {
 };
 
 export type ComputeTokenReportDependencies = {
-  aggregateUsage: typeof aggregateUsage;
-  resolveSessionTree: typeof resolveSessionTree;
-};
-
-const DEFAULT_DEPENDENCIES: ComputeTokenReportDependencies = {
-  aggregateUsage,
-  resolveSessionTree,
+  aggregateUsage(params: UsageQuery): Promise<AggregateResult>;
+  resolveSessionTree(sessionID: string): Promise<SessionTreeNode[]>;
 };
 
 function sessionLookupError(
@@ -74,7 +67,6 @@ function sessionLookupError(
     generatedAtMs,
     sessionID: error.sessionID,
     message: error.message,
-    checkedPath: error.checkedPath,
   };
 }
 
@@ -114,9 +106,8 @@ async function computeUsageReport(params: {
 
 export async function computeTokenReport(
   params: ComputeTokenReportParams,
-  injectedDependencies?: ComputeTokenReportDependencies,
+  dependencies: ComputeTokenReportDependencies,
 ): Promise<TokenReportData> {
-  const dependencies = injectedDependencies ?? DEFAULT_DEPENDENCIES;
   const spec = getTokenReportCommandSpec(params.command);
   if (!spec) return { kind: "unknown_command", command: params.command };
 
@@ -126,7 +117,7 @@ export async function computeTokenReport(
     return sessionLookupError(
       spec.template,
       untilMs,
-      new SessionNotFoundError("(none)", "(none)"),
+      new SessionNotFoundError("(none)"),
     );
   }
 

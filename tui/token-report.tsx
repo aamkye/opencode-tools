@@ -1,95 +1,80 @@
-import type { TuiCommand, TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { Plugin } from "@opencode/plugin/tui"
 
 import {
   activeSessionID,
+  aggregateUsage,
+  createSessionSource,
+  createUsageSource,
   defineTuiPlugin,
+  getCommandTitle,
   persistTokenReport,
   pluginDescriptor,
+  resolveSessionTree,
   TOKEN_REPORT_COMMANDS,
+  type ComputeTokenReportDependencies,
+  type TokenReportCommandId,
 } from "../shared/opencode-tools-shared.js"
 
-const RANGE_MODE = "aamkye.token-report-range"
-
-export function tokenReportCommands(
-  api: TuiPluginApi,
-  setRangeDialogClose: (close: () => void) => void = () => {},
-): TuiCommand[] {
+export function registerTokenReportTui(api: Plugin.Context): () => void {
+  const usage = createUsageSource(createSessionSource(api.client))
+  const reportLifetime = new AbortController()
+  const dependencies: ComputeTokenReportDependencies = {
+    aggregateUsage: (params) => aggregateUsage(params, usage, reportLifetime.signal),
+    resolveSessionTree: (sessionID) => resolveSessionTree(sessionID, usage, reportLifetime.signal),
+  }
   let reportSessionID: string | undefined
+  let creation: Promise<string | undefined> | undefined
+
+  async function createHomeSession(): Promise<string | undefined> {
+    try {
+      const session = await api.client.session.create({
+        title: "Token Reports", location: api.location ?? api.data.location.default(),
+      }, { signal: reportLifetime.signal })
+      if (reportLifetime.signal.aborted) return
+      if (!session.id) throw new Error("Empty token report session ID")
+      reportSessionID = session.id
+      return session.id
+    } catch {
+      if (!reportLifetime.signal.aborted) api.ui.toast.show({ message: "Unable to create token report session" })
+    }
+  }
 
   async function resolveHomeSessionID(): Promise<string | undefined> {
     if (!reportSessionID) {
-      try {
-        const result = await api.client.session.create({ body: { title: "Token Reports" } })
-        if (result.error || typeof result.data?.id !== "string" || result.data.id === "") {
-          api.ui.toast({ message: "Unable to create token report session" })
-          return undefined
-        }
-        reportSessionID = result.data.id
-      } catch {
-        api.ui.toast({ message: "Unable to create token report session" })
-        return undefined
-      }
+      creation ??= createHomeSession().finally(() => { creation = undefined })
+      await creation
     }
-
-    api.route.navigate("session", { sessionID: reportSessionID })
+    if (reportLifetime.signal.aborted || !reportSessionID) return
+    api.ui.router.navigate({ type: "session", sessionID: reportSessionID })
     return reportSessionID
   }
 
-  return TOKEN_REPORT_COMMANDS.map((spec) => ({
-    name: `aamkye.${spec.id}`,
-    title: spec.kind === "between" ? "Tokens used (Date Range)" : spec.title,
-    namespace: "palette",
-    slashName: spec.id,
-    async run() {
-      const sessionID = activeSessionID(api) ?? await resolveHomeSessionID()
-      if (!sessionID) return
-      if (spec.id !== "tokens_between") {
-        await persistTokenReport(api, sessionID, spec.id)
-        return
-      }
+  async function runReport(command: TokenReportCommandId, input?: string): Promise<void> {
+    if (reportLifetime.signal.aborted) return
+    let sessionID = activeSessionID(api)
+    if (command === "tokens_between" && !input?.trim()) {
+      input = await api.ui.dialog.prompt({ title: "Token report date range", placeholder: "YYYY-MM-DD YYYY-MM-DD" })
+      if (reportLifetime.signal.aborted || input === undefined) return
+    }
+    sessionID ??= await resolveHomeSessionID()
+    if (reportLifetime.signal.aborted || !sessionID) return
+    await persistTokenReport(api, sessionID, command, dependencies, input, reportLifetime.signal)
+  }
 
-      const popMode = api.mode.push(RANGE_MODE)
-      let closed = false
-      const close = () => {
-        if (closed) return
-        closed = true
-        popMode()
-        api.ui.dialog.clear()
-      }
-      setRangeDialogClose(close)
-      api.ui.dialog.replace(
-        () => api.ui.DialogPrompt({
-          title: "Token report date range",
-          placeholder: "YYYY-MM-DD YYYY-MM-DD",
-          onConfirm(value) {
-            close()
-            void persistTokenReport(api, sessionID, spec.id, value)
-          },
-        }),
-        close,
-      )
-    },
-  }))
+  const commands = TOKEN_REPORT_COMMANDS
+  api.keymap.layer(() => ({ mode: "global", commands: commands.map((command) => ({
+    id: `aamkye.${command.id}`,
+    title: getCommandTitle(command.id),
+    palette: true,
+    slash: { name: command.id, ...(command.id === "tokens_between" ? { arguments: true as const } : {}) },
+    run: (input) => runReport(command.id, input),
+  })) }))
+
+  return () => reportLifetime.abort()
 }
 
-export function registerTokenReportTui(api: TuiPluginApi): () => void {
-  let closeRangeDialog: (() => void) | undefined
-  api.keymap.registerLayer({
-    commands: tokenReportCommands(api, (close) => { closeRangeDialog = close }),
-  })
-  api.keymap.registerLayer({
-    mode: RANGE_MODE,
-    bindings: [{
-      key: "escape",
-      cmd: () => closeRangeDialog?.(),
-      desc: "Cancel token report date range",
-    }],
-  })
-  return () => closeRangeDialog?.()
-}
-
-const plugin = defineTuiPlugin(pluginDescriptor("token-report"), (context, api) => {
-  context.onCleanup(registerTokenReportTui(api))
+const plugin = defineTuiPlugin(pluginDescriptor("token-report"), (scope, api) => {
+  scope.onCleanup(registerTokenReportTui(api))
 })
 
 export default plugin

@@ -20,7 +20,6 @@ export function renderTokenReport(data: TokenReportData): string {
         "session_lookup_error:",
         `- session_id: ${data.sessionID}`,
         `- error: ${data.message}`,
-        `- checked_path: ${data.checkedPath}`,
       ].join("\n");
     case "report":
       return formatQuotaStatsReport({

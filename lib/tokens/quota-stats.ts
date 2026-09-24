@@ -1,12 +1,5 @@
-import type { OpenCodeMessage } from "./opencode-storage";
-import {
-  getOpenCodeDbPath,
-  iterAssistantMessages,
-  iterAssistantMessagesForSessions,
-  iterAssistantMessagesForSession,
-  readAllSessionsIndex,
-  SessionNotFoundError,
-} from "./opencode-storage";
+import type { SessionInfo } from "@opencode/client";
+import { SessionNotFoundError, type UsageQuery, type UsageSource } from "./usage-source.js";
 import {
   hasCost,
   hasProvider,
@@ -29,7 +22,7 @@ import {
 } from "./token-buckets";
 import type { TokenBuckets } from "./token-buckets";
 
-export { SessionNotFoundError } from "./opencode-storage";
+export { SessionNotFoundError } from "./usage-source.js";
 export type { TokenBuckets } from "./token-buckets";
 
 export type PricedKey = {
@@ -433,8 +426,8 @@ function classifyMissingPricing(params: {
 }
 
 function compareSessionCreatedAt(
-  a: Awaited<ReturnType<typeof readAllSessionsIndex>>[string],
-  b: Awaited<ReturnType<typeof readAllSessionsIndex>>[string],
+  a: SessionInfo,
+  b: SessionInfo,
 ): number {
   const aCreated = typeof a.time?.created === "number" && Number.isFinite(a.time.created) ? a.time.created : Number.MAX_SAFE_INTEGER;
   const bCreated = typeof b.time?.created === "number" && Number.isFinite(b.time.created) ? b.time.created : Number.MAX_SAFE_INTEGER;
@@ -442,19 +435,15 @@ function compareSessionCreatedAt(
   return a.id.localeCompare(b.id);
 }
 
-export async function resolveSessionTree(rootSessionID: string): Promise<SessionTreeNode[]> {
-  if (!rootSessionID.startsWith("ses_")) {
-    throw new SessionNotFoundError(rootSessionID, "(invalid session ID format)");
-  }
-
-  const sessionsIdx = await readAllSessionsIndex();
-  const root = sessionsIdx[rootSessionID];
+export async function resolveSessionTree(rootSessionID: string, source: UsageSource, signal?: AbortSignal): Promise<SessionTreeNode[]> {
+  const sessions = await source.listSessions(signal);
+  const root = sessions.find((session) => session.id === rootSessionID);
   if (!root) {
-    throw new SessionNotFoundError(rootSessionID, getOpenCodeDbPath());
+    throw new SessionNotFoundError(rootSessionID);
   }
 
-  const childrenByParentID = new Map<string, Array<(typeof sessionsIdx)[string]>>();
-  for (const session of Object.values(sessionsIdx)) {
+  const childrenByParentID = new Map<string, SessionInfo[]>();
+  for (const session of sessions) {
     if (!session.parentID) continue;
     const children = childrenByParentID.get(session.parentID);
     if (children) children.push(session);
@@ -466,7 +455,7 @@ export async function resolveSessionTree(rootSessionID: string): Promise<Session
   const tree: SessionTreeNode[] = [];
   const visited = new Set<string>();
 
-  const visit = (session: (typeof sessionsIdx)[string], depth: number): void => {
+  const visit = (session: SessionInfo, depth: number): void => {
     if (visited.has(session.id)) return;
     visited.add(session.id);
     tree.push({ sessionID: session.id, parentID: session.parentID, title: session.title, depth });
@@ -478,25 +467,12 @@ export async function resolveSessionTree(rootSessionID: string): Promise<Session
   return tree;
 }
 
-export async function aggregateUsage(params: {
-  sinceMs?: number;
-  untilMs?: number;
-  sessionID?: string;
-  sessionIDs?: string[];
-}): Promise<AggregateResult> {
-  if (params.sessionID && params.sessionIDs?.length) {
+export async function aggregateUsage(params: UsageQuery, source: UsageSource, signal?: AbortSignal): Promise<AggregateResult> {
+  if (params.sessionID !== undefined && params.sessionIDs !== undefined) {
     throw new Error("aggregateUsage received both sessionID and sessionIDs");
   }
 
-  let messages: OpenCodeMessage[];
-  if (params.sessionIDs) {
-    messages = await iterAssistantMessagesForSessions({ sessionIDs: params.sessionIDs, sinceMs: params.sinceMs, untilMs: params.untilMs });
-  } else if (params.sessionID) {
-    messages = await iterAssistantMessagesForSession({ sessionID: params.sessionID, sinceMs: params.sinceMs, untilMs: params.untilMs });
-  } else {
-    messages = await iterAssistantMessages({ sinceMs: params.sinceMs, untilMs: params.untilMs });
-  }
-  const sessionsIdx = await readAllSessionsIndex();
+  const { messages, sessions } = await source.load(params, signal);
 
   const byModel = new Map<string, AggregateRow>();
   const bySession = new Map<string, SessionRow>();
@@ -514,7 +490,7 @@ export async function aggregateUsage(params: {
   for (const msg of messages) {
     const tokens = tokenBucketsFromMessage(msg);
     const sid = msg.sessionID;
-    const sessionTitle = sessionsIdx[sid]?.title;
+    const sessionTitle = sessions.get(sid)?.title;
     const existingSessionRow = bySession.get(sid);
     if (existingSessionRow) {
       existingSessionRow.tokens = addTokenBuckets(existingSessionRow.tokens, tokens);
@@ -523,9 +499,10 @@ export async function aggregateUsage(params: {
       bySession.set(sid, { sessionID: sid, title: sessionTitle, tokens, costUsd: 0, messageCount: 1 });
     }
 
-    const cacheKey = `${msg.providerID ?? ""}|||${msg.modelID ?? ""}`;
+    const { providerID, id: modelID } = msg.model;
+    const cacheKey = `${providerID}|||${modelID}`;
     const cached = resolutionCache.get(cacheKey);
-    const mapping = cached ?? resolvePricingKey({ providerID: msg.providerID, modelID: msg.modelID });
+    const mapping = cached ?? resolvePricingKey({ providerID, modelID });
     if (!cached) resolutionCache.set(cacheKey, mapping);
 
     if (!mapping.ok) {
@@ -544,8 +521,8 @@ export async function aggregateUsage(params: {
       if (classification.kind === "unpriced") {
         unpricedTotals = addTokenBuckets(unpricedTotals, tokens);
         const rowKey: UnpricedKey = {
-          sourceProviderID: msg.providerID ?? "unknown",
-          sourceModelID: msg.modelID ?? "unknown",
+          sourceProviderID: providerID,
+          sourceModelID: modelID,
           mappedProvider: mapping.key.provider,
           mappedModel: mapping.key.model,
           reason: classification.reason,
@@ -559,8 +536,8 @@ export async function aggregateUsage(params: {
 
       unknownTotals = addTokenBuckets(unknownTotals, tokens);
       const unk: UnknownKey = {
-        sourceProviderID: msg.providerID ?? "unknown",
-        sourceModelID: msg.modelID ?? "unknown",
+        sourceProviderID: providerID,
+        sourceModelID: modelID,
         mappedProvider: mapping.key.provider,
         mappedModel: mapping.key.model,
       };
@@ -574,8 +551,8 @@ export async function aggregateUsage(params: {
     pricedTotals = addTokenBuckets(pricedTotals, tokens);
     costTotal += priced.costUsd;
 
-    const srcProviderID = msg.providerID ?? "unknown";
-    const srcModelID = msg.modelID ?? "unknown";
+    const srcProviderID = providerID;
+    const srcModelID = modelID;
     const srcModelKey = `${srcProviderID}\n${srcModelID}`;
     const sm = bySourceModel.get(srcModelKey);
     if (sm) { sm.tokens = addTokenBuckets(sm.tokens, tokens); sm.costUsd += priced.costUsd; sm.messageCount += 1; }

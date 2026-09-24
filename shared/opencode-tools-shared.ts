@@ -162,6 +162,9 @@ export type {
   TokenReportCommandSpec,
 } from "../lib/tokens/token-commands";
 export { computeTokenReport } from "../lib/tokens/token-report-data";
+export { createSessionSource } from "../lib/session-source.js";
+export { createUsageSource } from "../lib/tokens/usage-source.js";
+export { aggregateUsage, resolveSessionTree } from "../lib/tokens/quota-stats.js";
 export { renderTokenReport } from "../lib/tokens/token-report-presenter";
 export type {
   ComputeTokenReportDependencies,
