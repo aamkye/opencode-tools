@@ -61,6 +61,21 @@ test("renders and collapses unavailable state without an empty-session host call
   } finally { await mounted.dispose() }
 })
 
+test("preserves user disclosure while messages, cost, and model limits refresh", async () => {
+  const mounted = await mountContextPanel({ sessionID: "session-a", sessions, models: [contextModel()] })
+  try {
+    for (const marker of ["▶ ", "▼ "]) {
+      mounted.view().clickHeader()
+      mounted.setMessages("session-a", [message({ input: 100_000 })])
+      mounted.setSessionCost("session-a", 2)
+      mounted.setModels([contextModel(200_000)])
+      assert.equal(mounted.view().marker, marker)
+      if (marker === "▶ ") assert.equal(mounted.view().summaryText, "50%")
+      else assert.equal(mounted.view().rows.find((row) => row.label === "Used")?.value, "50%")
+    }
+  } finally { await mounted.dispose() }
+})
+
 test("switches native session props and reacts to messages and models without remounting", async () => {
   const initial = new Map([
     ["session-a", [message()]],

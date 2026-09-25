@@ -245,7 +245,8 @@ export function setupSubagent(scope: TuiFeatureContext, api: Plugin.Context, inj
   }
 
   function SubagentPanel(props: { panelState: Extract<SubagentSourceState, { phase: "ready" | "stale" }> }) {
-    const parentID = () => props.panelState.parentID
+    // Snapshot updates must not reset disclosures for the same parent.
+    const parentID = createMemo(() => props.panelState.parentID)
     const [collapsed, setCollapsed] = createSignal(collapseDefaults.collapsed)
     const [expandedID, setExpandedID] = createSignal<string | undefined>()
     const [restExpanded, setRestExpanded] = createSignal(!collapseDefaults.secondaryCollapsed)

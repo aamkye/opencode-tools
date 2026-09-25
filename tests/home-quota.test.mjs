@@ -83,6 +83,20 @@ test("quota service leases isolate renderer, directory, and workspace identities
   assert.equal(hosts[0].listenerCount(), 0)
 })
 
+test("Quota preserves user disclosure across provider refreshes", async (t) => {
+  const host = await surfaces(t, { home: false, options: { defaultState: "expanded" } })
+  for (const marker of ["▶ ", "▼ "]) {
+    host.toggle()
+    const requests = host.requests.length
+    host.setCredential("zai", `refreshed-zai-${requests}`)
+    await flush()
+    assert.ok(host.requests.length > requests, "providers actually refreshed")
+    assert.ok(host.sidebarText().startsWith(`${marker}Quota`))
+    if (marker === "▶ ") assert.doesNotMatch(host.sidebarText(), /Z.AI: Max/)
+    else assert.match(host.sidebarText(), /Z.AI: Max/)
+  }
+})
+
 test("quota native theme changes project into already mounted view colors", async (t) => {
   const host = await surfaces(t, { home: false })
   const { RGBA } = await import("@opentui/core")

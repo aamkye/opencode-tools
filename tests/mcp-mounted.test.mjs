@@ -107,6 +107,19 @@ test("forces empty and unhydrated MCP state collapsed without persisting disclos
   }
 })
 
+test("preserves user disclosure while server status refreshes", async () => {
+  const mounted = await mountMcpPanel({ sessionID: "session-a", entries: statuses })
+  try {
+    for (const marker of ["▶ ", "▼ "]) {
+      mounted.view().clickHeader()
+      mounted.setMcp([{ name: "docs", status: { status: "connected" } }])
+      assert.equal(mounted.view().marker, marker)
+      if (marker === "▶ ") assert.equal(mounted.view().summaryText, "1/0/0")
+      else assert.equal(mounted.view().rows[0].name, "docs")
+    }
+  } finally { await mounted.dispose() }
+})
+
 test("honors one expand click received before MCP entries hydrate", async () => {
   const mounted = await mountMcpPanel({ defaultState: "collapsed" })
 

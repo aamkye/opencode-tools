@@ -130,6 +130,22 @@ test("renders stale detail in expanded and collapsed option-A headers", async ()
   }
 })
 
+test("preserves user disclosure through usage refreshes", async () => {
+  const mounted = await mountSesTokensPanel({ sessionID: "session-a" })
+  try {
+    await resolveReady(mounted)
+    for (const marker of ["▶ ", "▼ "]) {
+      await mounted.view().clickHeader()
+      mounted.emit({ type: "session.usage.updated", data: { sessionID: "session-a" } })
+      await mounted.runTimer(200)
+      await mounted.resolveMessages("session-a", { data: readyMessages })
+      assert.equal(mounted.view().marker, marker)
+      if (marker === "▶ ") assert.equal(mounted.view().summaryText, "29.2M")
+      else assert.equal(mounted.view().rows.at(-1).value, "29.2M")
+    }
+  } finally { await mounted.dispose() }
+})
+
 test("renders muted loading and unavailable states without zero metrics", async () => {
   const mounted = await mountSesTokensPanel({ sessionID: "session-a" })
   try {

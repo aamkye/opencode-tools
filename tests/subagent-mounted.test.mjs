@@ -388,6 +388,62 @@ test("matches semi-collapsed Rest and collapsed count layouts", async () => {
   }
 })
 
+for (const defaultState of ["expanded", "collapsed"]) {
+  test(`preserves user panel disclosure across refreshes with ${defaultState} default`, async () => {
+    const mounted = await mountSubagentPanel({ parentID: "parent-a", defaultState })
+    try {
+      await mounted.resolveReady()
+      await mounted.view().clickHeader()
+      const marker = mounted.view().marker
+      for (const type of ["session.usage.updated", "server.connected"]) {
+        mounted.emit({ type, data: { sessionID: "subagent-9" } })
+        await mounted.runTimer(200)
+        await mounted.resolveReady()
+        assert.equal(mounted.view().marker, marker)
+      }
+    } finally { await mounted.dispose() }
+  })
+}
+
+test("preserves Rest and child disclosures across snapshot and failure updates", async () => {
+  const mounted = await mountSubagentPanel({ parentID: "parent-a" })
+  try {
+    await mounted.resolveReady()
+    await mounted.view().clickRest()
+    await mounted.view().clickEntry("SubAgent9")
+    const assertDisclosures = () => {
+      assert.equal(mounted.view().lines.includes("▶ Rest"), true)
+      assert.equal(mounted.view().entryRows.find((row) => row.title === "SubAgent9")?.disclosure, "▼ ")
+    }
+    mounted.emit({ type: "session.renamed", data: { sessionID: "subagent-9" } })
+    await mounted.runTimer(200)
+    await mounted.resolveReady()
+    assertDisclosures()
+    mounted.emit({ type: "session.execution.failed", created: 20_000_000, data: { sessionID: "subagent-9" } })
+    await mounted.flushWrites()
+    assertDisclosures()
+    assert.equal(mounted.view().detailRows.find((row) => row.label === "status:")?.value, "failed")
+  } finally { await mounted.dispose() }
+})
+
+test("preserves collapsed state through stale publication and recovery", async () => {
+  const mounted = await mountSubagentPanel({ parentID: "parent-a" })
+  try {
+    await mounted.resolveReady()
+    await mounted.view().clickHeader()
+    mounted.emit({ type: "server.connected", data: {} })
+    await mounted.runTimer(200)
+    await exhaustFailedLoad(mounted)
+    assert.equal(mounted.view().detailText, "stale")
+    assert.equal(mounted.view().marker, "▶ ")
+    mounted.emit({ type: "server.connected", data: {} })
+    await mounted.runTimer(200)
+    await mounted.resolveReady()
+    assert.equal(mounted.view().detailText, "")
+    assert.equal(mounted.view().marker, "▶ ")
+  } finally { await mounted.dispose() }
+})
+
 test("keeps the ready body through a successful background refresh", async () => {
   const mounted = await mountSubagentPanel({ parentID: "parent-a" })
   try {
