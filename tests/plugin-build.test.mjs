@@ -184,6 +184,15 @@ test("feature metafiles contain their own source and no sibling feature", () => 
   assert.doesNotMatch(contents["dist/opencode-tools-subagent/tui.js"], /(?:^|["'])\.\.\/tui\//)
 })
 
+test("non-quota sections exclude quota schemas and validation libraries", () => {
+  for (const key of ["context", "mcp", "ses-tokens", "subagent"]) {
+    const inputs = inputNames(buildResults.features[key])
+    assert.equal(includesSource(inputs, "shared/quota-rpc.ts"), false, `${key} includes quota RPC schemas`)
+    assert.equal(inputs.some((path) => path.includes("node_modules/zod/")), false, `${key} includes Zod`)
+    assert.equal(inputs.some((path) => path.startsWith("tui/providers/")), false, `${key} includes quota providers`)
+  }
+})
+
 test("all UI host and built-in dependencies remain external", () => {
   const builtins = new Set(builtinModules.flatMap((name) => [name, name.replace(/^node:/, "")]))
   const results = [buildResults.quotaService, ...Object.values(buildResults.features)]

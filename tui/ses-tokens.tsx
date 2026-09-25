@@ -5,7 +5,7 @@ import { createSessionSource } from "../lib/session-source.js"
 import {
   CompactPanel,
   createSessionTreeSnapshotLoader,
-  createSesTokensPanelModel,
+  createSesTokensModelCache,
   createSesTokensSource,
   createSessionSourcePool,
   defineTuiPlugin,
@@ -76,6 +76,9 @@ export function setupSesTokens(
   const chipEnabled = resolveChipOption(api.options, true).enabled
   const theme = () => panelTheme(api)
   const sessions = createSessionSource(api.client)
+  // Shared snapshots yield the same model in both surfaces; weak keys keep
+  // cached subtotals scoped to histories still owned by live session sources.
+  const modelForSnapshot = createSesTokensModelCache()
   // One loader shares its four request slots across every mounted view.
   const loadSnapshot = createSessionTreeSnapshotLoader({
     listSessions: (signal) => sessions.listSessions({}, signal),
@@ -113,7 +116,7 @@ export function setupSesTokens(
     const model = createMemo(() => {
       const current = state()
       return current?.phase === "ready" || current?.phase === "stale"
-        ? createSesTokensPanelModel(current.snapshot.messages)
+        ? modelForSnapshot(current.snapshot)
         : undefined
     })
     const rows = createMemo(() => {
@@ -177,7 +180,7 @@ export function setupSesTokens(
     const model = createMemo(() => {
       const current = state()
       return current?.phase === "ready" || current?.phase === "stale"
-        ? createSesTokensPanelModel(current.snapshot.messages)
+        ? modelForSnapshot(current.snapshot)
         : undefined
     })
     return (

@@ -87,6 +87,69 @@ const context = (previous, refresh) => ({
 })
 const changes = (messages = [], metadata = [], topology = false) => ({ messages, metadata, topology })
 
+test("SesTokens computes one shared model and reuses unchanged session subtotals", async () => {
+  const panel = await mountSesTokensPanel({ sessionID: "root" })
+  const chip = panel.mountView("root", "prompt.footer.status")
+  const reads = { root: 0, child: 0 }
+  const messages = (id, input) => oneMessage(id, input).map((message) => ({
+    ...message, get type() { reads[id]++; return "assistant" },
+  }))
+  const checkTotal = (total) => {
+    assert.equal(panel.view().rows.find((row) => row.label === "Σ total").value, total)
+    assert.equal(chip.text(), ` Tok ${total}`)
+  }
+  try {
+    await panel.resolveList({ data: [{ id: "root" }, { id: "child", parentID: "root" }] })
+    await panel.resolveMessages("root", { data: messages("root", 10) })
+    await panel.resolveMessages("child", { data: messages("child", 20) })
+    checkTotal("30")
+    assert.deepEqual(reads, { root: 1, child: 1 }, "sidebar and chip must share aggregation")
+    for (const [type, amount] of [["session.usage.updated", 25], ["session.revert.committed", 5], ["session.compaction.ended", 2]]) {
+      panel.emit({ type, data: { sessionID: "child" } })
+      await panel.runTimer(200)
+      await panel.resolveMessages("child", { data: messages("child", amount) })
+      checkTotal(String(10 + amount))
+      assert.equal(reads.root, 1, "unaffected root history must not be scanned")
+    }
+    assert.equal(reads.child, 4)
+    panel.emit({ type: "session.deleted", data: { sessionID: "child" } })
+    await panel.runTimer(200)
+    await panel.resolveList({ data: [{ id: "root" }] })
+    checkTotal("10")
+    assert.equal(reads.root, 1)
+    panel.emit({ type: "session.usage.updated", data: { sessionID: "root" } })
+    await panel.runTimer(200)
+    await panel.resolveMessages("root", { error: new Error("offline") })
+    for (const delay of [2_000, 4_000, 8_000]) {
+      await panel.runTimer(delay)
+      await panel.resolveList({ error: new Error("offline") })
+    }
+    checkTotal("10")
+    assert.equal(panel.view().detailText, "stale")
+    assert.equal(reads.root, 1, "stale publication must reuse the last model")
+    panel.emit({ type: "server.connected" })
+    await panel.runTimer(200)
+    await panel.resolveList({ data: [{ id: "root" }] })
+    await panel.resolveMessages("root", { data: messages("root", 7) })
+    checkTotal("7")
+    assert.equal(reads.root, 2, "reconnect must recompute refreshed history")
+  } finally { chip.dispose(); await panel.dispose() }
+})
+
+test("tree snapshots flatten histories only when the compatibility view is read", async () => {
+  let reads = 0
+  const messages = new Proxy([{ id: "message" }], {
+    get(target, property, receiver) { if (property === "0") reads++; return Reflect.get(target, property, receiver) },
+  })
+  const load = createSessionTreeSnapshotLoader({ async listSessions() { return [{ id: "root" }] }, async listMessages() { return messages } })
+  const snapshot = await load("root", context())
+  assert.equal(reads, 0)
+  assert.equal(snapshot.messagesBySession.get("root"), messages)
+  assert.deepEqual(snapshot.messages, [{ id: "message" }])
+  assert.equal(snapshot.messages, snapshot.messages)
+  assert.equal(reads, 1)
+})
+
 test("tree snapshots reload only dirty histories and reconcile additions and deletion", async () => {
   let sessions = [{ id: "root" }, { id: "child", parentID: "root" }]
   let lists = 0

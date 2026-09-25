@@ -1,15 +1,3 @@
-import { createOpenAiProvider } from "../tui/providers/openai.js";
-import {
-  composeQuotaPanel,
-  createQuotaSelection,
-  normalizeQuotaOptions,
-  quotaProviderDemand,
-  selectedQuotaProviderID,
-  selectedSessionQuotaProviderID,
-} from "../tui/features/quota.js";
-import { createOpenCodeGoProvider } from "../tui/providers/opencode-go.js";
-import { createZaiProvider } from "../tui/providers/zai.js";
-
 export { CompactPanel, CompactStatusRow, StatusChip } from "../tui/presentation/compact-panel.js";
 export type {
   CompactPanelProps,
@@ -25,7 +13,7 @@ export { createMcpPanelModel } from "../tui/features/mcp.js";
 export type { McpPanelModel, McpStatusRow } from "../tui/features/mcp.js";
 export { createContextPanelModel } from "../tui/features/context.js";
 export type { ContextPanelModel } from "../tui/features/context.js";
-export { createSesTokensPanelModel } from "../tui/features/ses-tokens.js";
+export { createSesTokensModelCache, createSesTokensPanelModel } from "../tui/features/ses-tokens.js";
 export type { SesTokenTotals, SesTokensMessage, SesTokensPanelModel } from "../tui/features/ses-tokens.js";
 export { allocateSubagentEntryRow, createSubagentPanelModel, subagentEntryDuration } from "../tui/features/subagent.js";
 export type {
@@ -74,26 +62,6 @@ export type {
   SesTokensSourceDependencies,
   SesTokensSourceState,
 } from "../tui/services/ses-tokens-source.js";
-export { createOpenAiProvider };
-export {
-  acquireQuotaProviderHub,
-  createQuotaProviderHub,
-} from "../tui/services/quota-provider-hub.js";
-export {
-  createOpenCodeGoProvider,
-  mapOpenCodeGoPanelState,
-  openCodeGoHomeQuotaSummary,
-} from "../tui/providers/opencode-go.js";
-export type {
-  OpenCodeGoConfig,
-  OpenCodeGoOptions,
-  OpenCodeGoPanelPhase,
-  OpenCodeGoPanelState,
-  OpenCodeGoProviderOptions,
-  OpenCodeGoQuotaData,
-  OpenCodeGoWindow,
-} from "../tui/providers/opencode-go.js";
-export { createZaiProvider };
 export type {
   HomeQuotaSummary,
   OpenAiHomeQuotaSummary,
@@ -102,52 +70,11 @@ export type {
   QuotaProviderAdapter,
   ZaiHomeQuotaSummary,
 } from "../tui/providers/types.js";
-export type {
-  QuotaProviderDemand,
-  QuotaProviderHub,
-} from "../tui/services/quota-provider-hub.js";
-export {
-  composeQuotaPanel,
-  createQuotaSelection,
-  normalizeQuotaOptions,
-  quotaProviderDemand,
-  selectedQuotaProviderID,
-  selectedSessionQuotaProviderID,
-};
-export type {
-  NormalizedQuotaOptions,
-  PercentageMode,
-  ProgressColorOptions,
-  QuotaCompositionOptions,
-  QuotaPluginOptions,
-  QuotaSelection,
-  SortDirection,
-} from "../tui/features/quota.js";
 export {
   formatHomeQuotaLine,
   homeQuotaPercentParts,
   homeQuotaStatusRole,
 } from "../tui/features/home.js";
-
-export type QuotaAdapterShared = {
-  normalizeOptions: typeof normalizeQuotaOptions;
-  composePanel: typeof composeQuotaPanel;
-  createSelection: typeof createQuotaSelection;
-  quotaProviderDemand: typeof quotaProviderDemand;
-  createZaiProvider: typeof createZaiProvider;
-  createOpenAiProvider: typeof createOpenAiProvider;
-  createOpenCodeGoProvider: typeof createOpenCodeGoProvider;
-};
-
-export const quotaAdapterShared: QuotaAdapterShared = {
-  normalizeOptions: normalizeQuotaOptions,
-  composePanel: composeQuotaPanel,
-  createSelection: createQuotaSelection,
-  quotaProviderDemand,
-  createZaiProvider,
-  createOpenAiProvider,
-  createOpenCodeGoProvider,
-};
 
 export { acquireService, defineTuiPlugin } from "../tui/runtime/plugin.js";
 export { panelTheme } from "../tui/runtime/theme.js";

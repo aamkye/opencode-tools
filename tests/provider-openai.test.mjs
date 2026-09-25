@@ -343,7 +343,7 @@ test("prefers reset_at over reset_after_seconds", () => {
 
 test("exposes a framework-only OpenAI adapter without layout or slot registration", () => {
   const source = readFileSync("tui/providers/openai.ts", "utf8")
-  const shared = existsSync("shared/opencode-tools-shared.ts") ? readFileSync("shared/opencode-tools-shared.ts", "utf8") : ""
+  const shared = existsSync("shared/opencode-tools-quota.ts") ? readFileSync("shared/opencode-tools-quota.ts", "utf8") : ""
   assert.doesNotMatch(source, /@opentui\/solid/)
   assert.doesNotMatch(source, /slots\.register/)
   assert.match(shared, /createOpenAiProvider/)

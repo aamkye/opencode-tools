@@ -212,9 +212,11 @@ async function loadSessionTreeSnapshotWithLimiter(
   if (options.signal) options.signal.removeEventListener("abort", abortFromParent)
   if (failed) throw firstError
   throwIfAborted(options.signal)
+  let messages: readonly SessionMessageInfo[] | undefined
   return {
     sessionIDs,
-    messages: messagesBySession.flat(),
+    // Consumers that aggregate by history need no second, flattened copy.
+    get messages() { return messages ??= messagesBySession.flat() },
     messagesBySession: new Map(sessionIDs.map((id, index) => [id, messagesBySession[index]])),
   }
 }

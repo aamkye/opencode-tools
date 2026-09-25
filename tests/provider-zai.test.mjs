@@ -360,7 +360,7 @@ test("composes stale Off-Peak and stale header segments exactly", () => {
 
 test("exposes a framework-only provider adapter and semantic home summary", () => {
   const source = readFileSync("tui/providers/zai.ts", "utf8")
-  const shared = existsSync("shared/opencode-tools-shared.ts") ? readFileSync("shared/opencode-tools-shared.ts", "utf8") : ""
+  const shared = existsSync("shared/opencode-tools-quota.ts") ? readFileSync("shared/opencode-tools-quota.ts", "utf8") : ""
   assert.doesNotMatch(source, /@opentui\/solid/)
   assert.doesNotMatch(source, /slots\.register/)
   assert.match(shared, /createZaiProvider/)

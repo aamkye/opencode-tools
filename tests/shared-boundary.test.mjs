@@ -118,23 +118,23 @@ test("loadable TUI entries use the shared facade for computation", () => {
   const subagent = source("tui/subagent.tsx")
   const subagentSource = parsedSource("tui/subagent.tsx")
 
-  assert.match(quota, /from ["']\.\.\/shared\/opencode-tools-shared\.js["']/)
-  assert.match(home, /from ["']\.\.\/shared\/opencode-tools-shared\.js["']/)
+  assert.match(quota, /from ["']\.\.\/shared\/opencode-tools-quota\.js["']/)
+  assert.match(home, /from ["']\.\.\/shared\/opencode-tools-quota\.js["']/)
   assert.match(mcp, /from ["']\.\.\/shared\/opencode-tools-shared\.js["']/)
   const contextModelImport = namedImportLocalName(contextSource, "../shared/opencode-tools-shared.js", "createContextPanelModel")
   assert.ok(contextModelImport, "tui/context.tsx must named-import createContextPanelModel from the shared facade")
   assert.ok(callsIdentifier(contextSource, contextModelImport), "tui/context.tsx must call the imported createContextPanelModel")
   assert.match(context, /from ["']\.\.\/shared\/opencode-tools-shared\.js["']/)
-  const sesTokensModelImport = namedImportLocalName(sesTokensSource, "../shared/opencode-tools-shared.js", "createSesTokensPanelModel")
-  assert.ok(sesTokensModelImport, "tui/ses-tokens.tsx must named-import createSesTokensPanelModel from the shared facade")
-  assert.ok(callsIdentifier(sesTokensSource, sesTokensModelImport), "tui/ses-tokens.tsx must call the imported createSesTokensPanelModel")
+  const sesTokensModelImport = namedImportLocalName(sesTokensSource, "../shared/opencode-tools-shared.js", "createSesTokensModelCache")
+  assert.ok(sesTokensModelImport, "tui/ses-tokens.tsx must named-import createSesTokensModelCache from the shared facade")
+  assert.ok(callsIdentifier(sesTokensSource, sesTokensModelImport), "tui/ses-tokens.tsx must call the imported createSesTokensModelCache")
   for (const exportName of ["createSubagentPanelModel", "createSubagentSnapshotLoader", "createSubagentSource"]) {
     const localName = namedImportLocalName(subagentSource, "../shared/opencode-tools-shared.js", exportName)
     assert.ok(localName, `tui/subagent.tsx must named-import ${exportName} from the shared facade`)
     assert.ok(callsIdentifier(subagentSource, localName), `tui/subagent.tsx must call the imported ${exportName}`)
   }
   assertRelativeImports("tui/quota.tsx", [
-    "../shared/opencode-tools-shared.js",
+    "../shared/opencode-tools-quota.js",
     "./presentation/renderer.js",
     "./presentation/types.js",
   ])
@@ -143,7 +143,7 @@ test("loadable TUI entries use the shared facade for computation", () => {
   assert.doesNotMatch(quota, /\[["'][^"']+["']\s*\+/)
   assert.doesNotMatch(quota, /\bnormalizeQuotaOptions\b/)
   assert.doesNotMatch(quota, /\bcomposeQuotaPanel\b/)
-  assertRelativeImports("tui/home.tsx", ["../shared/opencode-tools-shared.js"])
+  assertRelativeImports("tui/home.tsx", ["../shared/opencode-tools-quota.js"])
   assertRelativeImports("tui/mcp.tsx", ["../shared/opencode-tools-shared.js"])
   assertRelativeImports("tui/context.tsx", ["../shared/opencode-tools-shared.js"])
   assertRelativeImports("tui/ses-tokens.tsx", ["../shared/opencode-tools-shared.js", "../lib/session-source.js"])
@@ -186,7 +186,7 @@ test("SubAgent fixes expanded titles to a 25-cell character-wrapped region", () 
 })
 
 test("shared facade exports computation without plugin registration or JSX", () => {
-  const shared = source(sharedPath)
+  const shared = source(sharedPath) + source("shared/opencode-tools-quota.ts")
   const sharedSource = parsedSource(sharedPath)
   const quotaFeature = source("tui/features/quota.ts")
   const homeFeature = source(homeFeaturePath)

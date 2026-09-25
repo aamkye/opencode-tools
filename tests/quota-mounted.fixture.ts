@@ -61,6 +61,7 @@ export async function mountQuotaSurfaces(options: {
   return {
     ...host, registrations, api, setSessionID, setChipSessionID, setColor, mounts: () => mounts,
     sidebarText: () => text(root), chipText: () => text(chipRoot), homeText: () => text(homeRoot),
+    sidebarNodes: () => nodes(root),
     colors: () => nodes(root).filter((node) => node.type === "text").map((node) => node.props.fg),
     toggle() {
       const box = nodes(root).find((node) => typeof node.props.onMouseDown === "function")

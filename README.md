@@ -308,6 +308,8 @@ Their runtime IDs are `aamkye.opencode-tools-home`,
 `aamkye.opencode-tools-mcp`, and `aamkye.opencode-tools-quota-service`.
 Each `tui.js` is a self-contained UI bundle built from modular TypeScript source.
 Common code is duplicated between bundles in exchange for independent files.
+The common computation facade excludes quota transport and schemas; only Home,
+Quota, and the quota service bundle those dependencies.
 The minimal package wrapper supplies V2 discovery (`package.json`) and a server
 registration stub (`index.js`). An isolated OpenCode 2.0.16 test loaded a CLI
 package exporting `./tui`, but did not activate the equivalent direct JS file

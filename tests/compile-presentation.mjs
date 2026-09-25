@@ -43,6 +43,7 @@ for (const name of ["presentation-types", "presentation-format", "presentation-l
 mkdirSync(".tmp-test", { recursive: true })
 
 const fixtures = [
+  ["tests/renderer-clock.fixture.tsx", ".tmp-test/renderer-clock.mjs", ["browser"], [openTuiSolidPlugin]],
   ["tests/quota-rpc.fixture.ts", ".tmp-test/quota-rpc.mjs"],
   ["tui/presentation/types.ts", ".tmp-test/presentation-types.mjs"],
   ["tui/presentation/format.ts", ".tmp-test/presentation-format.mjs"],

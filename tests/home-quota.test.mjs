@@ -106,6 +106,25 @@ test("quota native theme changes project into already mounted view colors", asyn
   assert.equal(host.mounts(), 1)
 })
 
+test("provider clock ticks do not remount unchanged quota rows", async (t) => {
+  const originalSet = globalThis.setInterval, originalClear = globalThis.clearInterval, originalNow = Date.now
+  const intervals = new Map()
+  let id = 0, now = originalNow()
+  Date.now = () => now
+  globalThis.setInterval = (fn, delay) => { const key = ++id; intervals.set(key, { fn, delay }); return key }
+  globalThis.clearInterval = (id) => intervals.delete(id)
+  t.after(() => { globalThis.setInterval = originalSet; globalThis.clearInterval = originalClear; Date.now = originalNow })
+  const host = await surfaces(t, { home: false, options: { defaultState: "expanded" } })
+  const rows = host.sidebarNodes().filter((node) => node.type === "box")
+  try {
+    now += 1_000
+    for (const timer of [...intervals.values()]) if (timer.delay === 1_000) timer.fn()
+    const next = host.sidebarNodes().filter((node) => node.type === "box")
+    assert.equal(next.length, rows.length)
+    for (let i = 0; i < rows.length; i++) assert.equal(next[i] === rows[i], true, `row ${i} remounted on an unchanged provider tick`)
+  } finally { await host.dispose() }
+})
+
 test("formats two-window homepage quota lines", () => {
   assert.equal(
     formatHomeQuotaLine({ provider: "Z.AI", plan: "Max", primaryPct: 93, secondaryPct: 84 }),

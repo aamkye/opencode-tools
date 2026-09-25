@@ -10,7 +10,7 @@ import {
   type HomeQuotaSummary,
   pluginDescriptor,
   type QuotaProviderAdapter,
-} from "../shared/opencode-tools-shared.js"
+} from "../shared/opencode-tools-quota.js"
 
 function HomeQuotaLine(props: { summary: HomeQuotaSummary; theme: () => PanelTheme }) {
   const primary = () => homeQuotaPercentParts(props.summary)[0]

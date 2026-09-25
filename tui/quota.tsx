@@ -4,7 +4,7 @@ import {
   acquireQuotaProviderHub, createQuotaSelection, defineTuiPlugin, panelTheme, pluginDescriptor,
   quotaAdapterShared, resolveChipOption, resolveCollapseDefault, StatusChip,
   type PanelStatus, type QuotaProviderDemand,
-} from "../shared/opencode-tools-shared.js"
+} from "../shared/opencode-tools-quota.js"
 
 function quotaHubDemand(options: ReturnType<typeof quotaAdapterShared.normalizeOptions>): QuotaProviderDemand {
   const demand = quotaAdapterShared.quotaProviderDemand(options)
@@ -24,7 +24,11 @@ const plugin = defineTuiPlugin(pluginDescriptor("quota"), (scope, api) => {
     const selection = createQuotaSelection(api, providers)
     onCleanup(selection.dispose)
     createEffect(() => { selection.setSessionID(sessionID()) })
-    return createMemo(() => quotaAdapterShared.composePanel(selection.selectedProviderID(), providers(), options))
+    // Providers tick to detect reset/peak boundaries. Their small, serializable
+    // panel models should reach the renderer only when displayed data changes.
+    return createMemo(() => quotaAdapterShared.composePanel(selection.selectedProviderID(), providers(), options), undefined, {
+      equals: (previous, next) => JSON.stringify(previous) === JSON.stringify(next),
+    })
   }
 
   function QuotaPanel(props: { sessionID: string }) {
