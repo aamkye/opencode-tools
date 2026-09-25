@@ -12,6 +12,7 @@ export type SubagentEntry = {
   agent: string
   model: string
   status: SubagentStatus
+  startedAt: number
   durationMs: number
   duration: string
 }
@@ -83,6 +84,12 @@ export function allocateSubagentEntryRow(
   return { disclosure, title, beforeDurationGap, duration }
 }
 
+export function subagentEntryDuration(entry: SubagentEntry, now: number): string {
+  return entry.status === "running"
+    ? formatDuration(durationBetween(now, entry.startedAt), "hours")
+    : entry.duration
+}
+
 export function createSubagentPanelModel(
   snapshot: SubagentSnapshot,
   failureTimes: Readonly<Record<string, number>>,
@@ -135,6 +142,7 @@ export function createSubagentPanelModel(
       agent: identity(session.agent) ?? identity(assistant?.agent) ?? "-",
       model: identity(session.model?.id) ?? identity(assistant?.model?.id) ?? "-",
       status,
+      startedAt: session.time.created,
       durationMs,
       duration: formatDuration(durationMs, "hours"),
     }

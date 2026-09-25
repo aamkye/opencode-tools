@@ -36,7 +36,10 @@ test("keeps an omitted root and returns a root-only complete snapshot", async ()
     },
   })
 
-  assert.deepEqual(snapshot, { sessionIDs: ["root"], messages: [rootMessage] })
+  assert.deepEqual(snapshot, {
+    sessionIDs: ["root"], messages: [rootMessage],
+    messagesBySession: new Map([["root", [rootMessage]]]),
+  })
   assert.deepEqual(messageCalls, ["root"])
 })
 

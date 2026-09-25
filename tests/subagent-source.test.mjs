@@ -155,6 +155,37 @@ test("native failures retain evidence even when durable storage rejects", async 
   source.dispose()
 })
 
+test("coalesces metadata and history invalidation and fully reloads after a failed attempt", async () => {
+  const contexts = []
+  const complete = snapshot("parent", "a", "b")
+  const { source, scheduler, emit } = createHarness(async (_id, context) => {
+    contexts.push(context)
+    if (contexts.length === 3) throw new Error("offline")
+    return complete
+  })
+  source.setParentID("parent")
+  await settle()
+  emit({ type: "session.renamed", data: { sessionID: "a" } })
+  emit({ type: "session.usage.updated", data: { sessionID: "b" } })
+  scheduler.run(200)
+  await settle()
+  assert.equal(contexts[1].previous, complete)
+  assert.deepEqual(contexts[1].refresh, { topology: false, metadata: ["a"], messages: ["b"] })
+  emit({ type: "session.compaction.failed", created: 100, data: { sessionID: "a" } })
+  scheduler.run(200)
+  await settle()
+  assert.deepEqual(contexts[2].refresh.messages, ["a"])
+  scheduler.run(2_000)
+  await settle()
+  assert.equal(contexts[3].refresh, undefined)
+  assert.deepEqual(source.state().failureTimes, { a: 100 })
+  emit({ type: "server.connected", data: {} })
+  scheduler.run(200)
+  await settle()
+  assert.equal(contexts[4].refresh, undefined)
+  source.dispose()
+})
+
 test("native creation proves direct children before an immediate failure", async () => {
   const { source, emit } = createHarness(async () => snapshot("parent"))
   source.setParentID("parent")

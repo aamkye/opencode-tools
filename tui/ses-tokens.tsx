@@ -7,6 +7,7 @@ import {
   createSessionTreeSnapshotLoader,
   createSesTokensPanelModel,
   createSesTokensSource,
+  createSessionSourcePool,
   defineTuiPlugin,
   panelTheme,
   pluginDescriptor,
@@ -80,23 +81,25 @@ export function setupSesTokens(
     listSessions: (signal) => sessions.listSessions({}, signal),
     listMessages: (sessionID, signal) => sessions.listMessages(sessionID, signal),
   })
-  const views = new Set<() => void>()
-  scope.onCleanup(() => {
-    for (const dispose of views) dispose()
+  const sources = createSessionSourcePool((sessionID) => {
+    const source = createSesTokensSource({ loadSnapshot, onEvent: api.data.on, ...timers })
+    source.setSessionID(sessionID)
+    return source
   })
+  scope.onCleanup(() => sources.dispose())
 
   function useState(sessionID: () => string) {
-    const source = createSesTokensSource({ loadSnapshot, onEvent: api.data.on, ...timers })
-    const [state, setState] = createSignal<SesTokensSourceState | undefined>(source.state())
-    const unsubscribe = source.subscribe(() => setState(source.state()))
-    const dispose = () => {
-      views.delete(dispose)
-      unsubscribe()
-      source.dispose()
-    }
-    views.add(dispose)
-    onCleanup(dispose)
-    createEffect(() => source.setSessionID(sessionID()))
+    const [state, setState] = createSignal<SesTokensSourceState | undefined>()
+    createEffect(() => {
+      const lease = sources.acquire(sessionID())
+      setState(lease?.source.state())
+      if (!lease) return
+      const unsubscribe = lease.source.subscribe(() => setState(lease.source.state()))
+      onCleanup(() => {
+        unsubscribe()
+        lease.release()
+      })
+    })
     return state
   }
 

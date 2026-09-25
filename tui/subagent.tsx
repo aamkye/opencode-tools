@@ -11,6 +11,8 @@ import {
   createSubagentPanelModel,
   createSubagentSnapshotLoader,
   createSubagentSource,
+  createSessionSourcePool,
+  subagentEntryDuration,
   defineTuiPlugin,
   panelTheme,
   PANEL_MAX_CELLS,
@@ -126,12 +128,16 @@ function DetailRow(props: {
 
 function SubagentRow(props: {
   entry: SubagentEntry
+  now(): number
   expanded: boolean
   onToggle(): void
   onOpenSession(): void
   theme: () => PanelTheme
 }) {
   const role = () => statusRole(props.entry.status)
+  const duration = createMemo(() => props.entry.status === "running"
+    ? subagentEntryDuration(props.entry, props.now())
+    : props.entry.duration)
   const allocation = () => allocateSubagentEntryRow(PANEL_MAX_CELLS, 7)
   return (
     <box flexDirection="column" width="100%" overflow="hidden">
@@ -153,14 +159,14 @@ function SubagentRow(props: {
         </Show>
         <Show when={!props.expanded}>
           <box width={allocation().duration} flexShrink={0} justifyContent="flex-end" flexDirection="row">
-            <text wrapMode="none" fg={props.theme()[role()]}>{props.entry.duration}</text>
+            <text wrapMode="none" fg={props.theme()[role()]}>{duration()}</text>
           </box>
         </Show>
       </box>
       <Show when={props.expanded}>
         <DetailRow label="agent:" value={props.entry.agent} theme={props.theme} />
         <DetailRow label="status:" value={props.entry.status} status={role()} theme={props.theme} />
-        <DetailRow label="time:" value={props.entry.duration} status={role()} theme={props.theme} />
+        <DetailRow label="time:" value={duration()} status={role()} theme={props.theme} />
         <DetailRow label="model:" value={props.entry.model} theme={props.theme} />
         <box flexDirection="row" width="100%" overflow="hidden" onMouseDown={props.onOpenSession}>
           <text width={2} flexShrink={0}>{"  "}</text>
@@ -207,30 +213,34 @@ export function setupSubagent(scope: TuiFeatureContext, api: Plugin.Context, inj
     sessionStatus: (sessionID) => api.data.session.status(sessionID),
     listMessages: (sessionID, signal) => sessions.listMessages(sessionID, signal),
   })
-  const views = new Set<() => void>()
-  const clockStops = new Set<() => void>()
-  scope.onCleanup(() => {
-    for (const dispose of views) dispose()
-    for (const stop of clockStops) stop()
-    clockStops.clear()
-  })
-
-  function useState(parentID: () => string) {
+  const sources = createSessionSourcePool((parentID) => {
     const source = createSubagentSource({
       loadSnapshot, onEvent: api.data.on,
       loadFailures, saveFailures,
       now: injected.now, setTimer: injected.setTimer, clearTimer: injected.clearTimer,
     })
-    const [state, setState] = createSignal<SubagentSourceState | undefined>(source.state())
-    const unsubscribe = source.subscribe(() => setState(source.state()))
-    const dispose = () => {
-      views.delete(dispose)
-      unsubscribe()
-      source.dispose()
-    }
-    views.add(dispose)
-    onCleanup(dispose)
-    createEffect(() => source.setParentID(parentID()))
+    source.setParentID(parentID)
+    return source
+  })
+  const clockStops = new Set<() => void>()
+  scope.onCleanup(() => {
+    sources.dispose()
+    for (const stop of clockStops) stop()
+    clockStops.clear()
+  })
+
+  function useState(parentID: () => string) {
+    const [state, setState] = createSignal<SubagentSourceState | undefined>()
+    createEffect(() => {
+      const lease = sources.acquire(parentID())
+      setState(lease?.source.state())
+      if (!lease) return
+      const unsubscribe = lease.source.subscribe(() => setState(lease.source.state()))
+      onCleanup(() => {
+        unsubscribe()
+        lease.release()
+      })
+    })
     return state
   }
 
@@ -243,7 +253,7 @@ export function setupSubagent(scope: TuiFeatureContext, api: Plugin.Context, inj
     const model = createMemo<SubagentPanelModel>(() => createSubagentPanelModel(
       props.panelState.snapshot,
       props.panelState.failureTimes,
-      now(),
+      injected.now(),
     ))
     const summaryText = () => model().summary.map((segment) => segment.text).join("")
     const togglePanel = () => setCollapsed((current) => !current)
@@ -311,6 +321,7 @@ export function setupSubagent(scope: TuiFeatureContext, api: Plugin.Context, inj
             {(entry) => (
               <SubagentRow
                 entry={entry}
+                now={now}
                 expanded={expandedID() === entry.id}
                 onToggle={() => toggleEntry(entry.id)}
                 onOpenSession={() => api.ui.router.navigate({ type: "session", sessionID: entry.id })}
@@ -338,6 +349,7 @@ export function setupSubagent(scope: TuiFeatureContext, api: Plugin.Context, inj
                 {(entry) => (
                   <SubagentRow
                     entry={entry}
+                    now={now}
                     expanded={expandedID() === entry.id}
                     onToggle={() => toggleEntry(entry.id)}
                     onOpenSession={() => api.ui.router.navigate({ type: "session", sessionID: entry.id })}

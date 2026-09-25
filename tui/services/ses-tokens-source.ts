@@ -1,6 +1,7 @@
 import type { OpenCodeEvent } from "@opencode/client"
 
 import type { SessionTreeSnapshot, SessionTreeSnapshotLoader } from "./session-tree-snapshot.js"
+import { createSnapshotRefreshTracker } from "./snapshot-refresh.js"
 
 export type SesTokensSourceState =
   | { phase: "loading"; sessionID: string }
@@ -57,6 +58,7 @@ export function createSesTokensSource({
   const knownSessionIDs = new Set<string>()
   const listeners = new Set<() => void>()
   const retryTimers = new Set<unknown>()
+  const refresh = createSnapshotRefreshTracker()
 
   function notify(): void {
     for (const listener of listeners) {
@@ -103,6 +105,8 @@ export function createSesTokensSource({
     try {
       const snapshot = await loadSnapshot(capturedSessionID, {
         signal: controller.signal,
+        previous: currentState?.phase === "ready" || currentState?.phase === "stale" ? currentState.snapshot : undefined,
+        refresh: refresh.capture(),
         onSessionIDs(sessionIDs) {
           if (!isCurrent(capturedSessionID, capturedGeneration, controller)) return
           knownSessionIDs.clear()
@@ -110,12 +114,14 @@ export function createSesTokensSource({
         },
       })
       if (!isCurrent(capturedSessionID, capturedGeneration, controller)) return
+      refresh.clear()
       knownSessionIDs.clear()
       for (const id of snapshot.sessionIDs) knownSessionIDs.add(id)
       currentState = { phase: "ready", sessionID: capturedSessionID, snapshot }
       notify()
     } catch {
       if (!isCurrent(capturedSessionID, capturedGeneration, controller)) return
+      refresh.full()
       const retryDelay = RETRY_DELAYS_MS[attempt]
       if (retryDelay !== undefined) {
         let timer: unknown
@@ -152,8 +158,13 @@ export function createSesTokensSource({
 
   function scheduleRefresh(): void {
     if (disposed || sessionID === "") return
+    loadController?.abort()
+    generation += 1
+    clearRetryTimers()
+    const capturedGeneration = generation
     if (debounceTimer !== undefined) clearTimer(debounceTimer)
     debounceTimer = setTimer(() => {
+      if (generation !== capturedGeneration) return
       debounceTimer = undefined
       if (disposed || sessionID === "") return
       startRefresh()
@@ -165,13 +176,20 @@ export function createSesTokensSource({
   }
 
   const unsubscribers = REFRESH_EVENTS.map((type) => onEvent(type, (event) => {
+    if (disposed || sessionID === "") return
     if (event.type === "server.connected") {
+      refresh.add(event)
       scheduleRefresh()
       return
     }
     const parentID = event.type === "session.created" || event.type === "session.forked"
       ? event.data.parentID : undefined
-    if (hasKnownSessionID(event.data.sessionID, parentID)) scheduleRefresh()
+    if (hasKnownSessionID(event.data.sessionID, parentID)) {
+      refresh.add(event)
+      // Creation is proof of membership, including descendants created during debounce.
+      if (parentID && knownSessionIDs.has(parentID)) knownSessionIDs.add(event.data.sessionID)
+      scheduleRefresh()
+    }
   }))
 
   function setSessionID(nextSessionID: string): void {
@@ -181,6 +199,8 @@ export function createSesTokensSource({
     generation += 1
     clearTimers()
     sessionID = nextSessionID
+    refresh.clear()
+    refresh.full()
     knownSessionIDs.clear()
     if (nextSessionID === "") {
       currentState = undefined

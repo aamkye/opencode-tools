@@ -87,12 +87,13 @@ test("registers native SubAgent sidebar and chip slots", async () => {
   const mounted = await mountSubagentPanel()
   assert.equal(mounted.pluginID, "aamkye.opencode-tools-subagent")
   assert.deepEqual(mounted.registrations.map((claim) => claim.append), ["sidebar.content", "prompt.footer.status"])
-  assert.deepEqual(mounted.registeredTypes(), eventTypes)
+  assert.deepEqual(mounted.registeredTypes(), [])
   assert.deepEqual(mounted.kvReads, [
     subagentFailureKey,
   ])
   assert.deepEqual(mounted.listCalls, [])
   await mounted.setParentID("parent-a")
+  assert.deepEqual(mounted.registeredTypes(), eventTypes)
   assert.deepEqual(mounted.listCalls, [{ limit: 100, order: "asc" }])
   await mounted.resolveList({})
   assert.deepEqual(mounted.pendingDelays(), [2_000])
@@ -424,7 +425,7 @@ test("publishes stale only after background retries are exhausted", async () => 
     })
     assert.equal(mounted.view().detailText, "")
     await mounted.runTimer(200)
-    await mounted.resolveList({ error: new Error("offline") })
+    await mounted.resolveGet("subagent-9", { error: new Error("offline") })
     for (const delay of [2_000, 4_000]) {
       assert.equal(mounted.view().detailText, "")
       await mounted.runTimer(delay)
@@ -830,7 +831,11 @@ test("collapse parent switch completion and disposal stop the clock", async () =
       data: { sessionID: "subagent-9" },
     })
     await completed.runTimer(200)
-    await completed.resolveReady(terminalChildren)
+    await completed.resolveReady(canonicalChildren.map((child) => child.session.id === "subagent-9" ? {
+      ...child,
+      status: "idle",
+      session: { ...child.session, outcome: "succeeded", time: { ...child.session.time, idle: 20_000_000 } },
+    } : child))
     assert.equal(completed.intervalClears(), 1)
     assert.deepEqual(completed.activeIntervalDelays(), [])
   } finally {
@@ -1066,8 +1071,7 @@ test("a sidebar and chip for the same parent both publish native failures immedi
   try {
     await mounted.resolveReady([canonicalChildren[2]])
     chip = mounted.mountView("parent-a", [], "prompt.footer.status")
-    await mounted.resolveList({ data: [canonicalChildren[2].session] })
-    await mounted.resolveMessages("subagent-9", { data: canonicalChildren[2].messages })
+    assert.equal(mounted.listCalls.length, 1)
     assert.match(chip.text(), /Sub.*0\/1\/0/)
     mounted.emit({ type: "session.execution.failed", created: 20_000_000, data: { sessionID: "subagent-9" } })
     assert.equal(mounted.view().entryRows[0].durationColor, "#ff0000")

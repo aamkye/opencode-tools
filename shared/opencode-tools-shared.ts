@@ -27,7 +27,7 @@ export { createContextPanelModel } from "../tui/features/context.js";
 export type { ContextPanelModel } from "../tui/features/context.js";
 export { createSesTokensPanelModel } from "../tui/features/ses-tokens.js";
 export type { SesTokenTotals, SesTokensMessage, SesTokensPanelModel } from "../tui/features/ses-tokens.js";
-export { allocateSubagentEntryRow, createSubagentPanelModel } from "../tui/features/subagent.js";
+export { allocateSubagentEntryRow, createSubagentPanelModel, subagentEntryDuration } from "../tui/features/subagent.js";
 export type {
   SubagentEntry,
   SubagentEntryRowAllocation,
@@ -66,6 +66,7 @@ export type {
   SessionTreeSnapshotLoader,
 } from "../tui/services/session-tree-snapshot.js";
 export { createSesTokensSource } from "../tui/services/ses-tokens-source.js";
+export { createSessionSourcePool } from "../tui/services/session-source-pool.js";
 export type {
   SesTokensEventRegistrar,
   SesTokensRefreshEvent,

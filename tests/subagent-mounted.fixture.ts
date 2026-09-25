@@ -314,6 +314,8 @@ export async function mountSubagentPanel(options: {
   const statusCalls: string[] = []
   const routeCalls: unknown[] = []
   const pendingLists: Array<(result: ClientResult<readonly unknown[]>) => void> = []
+  const childIDs = new Set<string>()
+  const pendingGets: Array<{ sessionID: string; resolve(result: ClientResult<unknown>): void }> = []
   const pendingMessages: Array<{
     sessionID: string
     resolve(result: ClientResult<readonly unknown[]>): void
@@ -394,6 +396,12 @@ export async function mountSubagentPanel(options: {
           getCalls.push({ ...input, ...request })
           signals.push(request.signal)
           if (options.getSession) return options.getSession(input.sessionID, request.signal)
+          if (childIDs.has(input.sessionID)) return new Promise((resolve, reject) => {
+            pendingGets.push({ sessionID: input.sessionID, resolve(reply) {
+              if (!reply.data || "error" in reply) reject(reply.error)
+              else resolve(reply.data)
+            } })
+          })
           return {
             id: input.sessionID, projectID: "prj_test", location: { directory: "/test" },
             cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
@@ -661,7 +669,17 @@ export async function mountSubagentPanel(options: {
     async resolveList(result: ClientResult<readonly unknown[]>) {
       const resolve = pendingLists.shift()
       if (!resolve) throw new Error("No pending session.list call")
+      for (const session of result.data ?? []) {
+        const value = session as { id: string; parentID?: string }
+        if (value.parentID) childIDs.add(value.id)
+      }
       resolve(result)
+      await flushHost()
+    },
+    async resolveGet(sessionID: string, result: ClientResult<unknown>) {
+      const index = pendingGets.findIndex((pending) => pending.sessionID === sessionID)
+      if (index < 0) throw new Error(`No pending session.get call for ${sessionID}`)
+      pendingGets.splice(index, 1)[0].resolve(result)
       await flushHost()
     },
     async resolveMessages(sessionID: string, result: ClientResult<readonly unknown[]>) {
@@ -682,14 +700,20 @@ export async function mountSubagentPanel(options: {
         .map(({ session }) => session.title)
       statuses.clear()
       for (const entry of resolvedChildren) statuses.set(entry.session.id, entry.status)
-      await this.resolveList({ data: [
+      if (pendingLists.length) await this.resolveList({ data: [
         { id: currentParentID, parentID: undefined, title: "Parent", time: { created: 0, updated: 0 } },
         ...resolvedChildren.map(({ session }) => session),
       ] })
+      const sessions = new Map(resolvedChildren.map((entry) => [entry.session.id, entry.session]))
       const messages = new Map(resolvedChildren.map((entry) => [entry.session.id, entry.messages]))
-      while (pendingMessages.length > 0) {
-        const sessionID = pendingMessages[0].sessionID
-        await this.resolveMessages(sessionID, { data: messages.get(sessionID) ?? [] })
+      while (pendingGets.length || pendingMessages.length) {
+        if (pendingGets.length) {
+          const sessionID = pendingGets[0].sessionID
+          await this.resolveGet(sessionID, { data: sessions.get(sessionID) })
+        } else {
+          const sessionID = pendingMessages[0].sessionID
+          await this.resolveMessages(sessionID, { data: messages.get(sessionID) ?? [] })
+        }
       }
     },
     async runTimer(delay: number) {

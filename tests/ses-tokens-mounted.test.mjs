@@ -29,8 +29,9 @@ async function resolveReady(mounted, sessionID = "session-a", messages = readyMe
   await mounted.resolveMessages(sessionID, { data: messages })
 }
 
-async function exhaustFailedLoad(mounted) {
-  await mounted.resolveList({})
+async function exhaustFailedLoad(mounted, dirtySessionID) {
+  if (dirtySessionID) await mounted.resolveMessages(dirtySessionID, {})
+  else await mounted.resolveList({})
   for (const delay of [2_000, 4_000, 8_000]) {
     await mounted.runTimer(delay)
     await mounted.resolveList({ error: new Error("offline") })
@@ -113,7 +114,7 @@ test("renders stale detail in expanded and collapsed option-A headers", async ()
     await resolveReady(mounted)
     mounted.emit({ type: "session.usage.updated", data: { sessionID: "session-a" } })
     await mounted.runTimer(200)
-    await exhaustFailedLoad(mounted)
+    await exhaustFailedLoad(mounted, "session-a")
 
     assert.equal(mounted.view().detailText, "stale")
     assert.equal(mounted.view().detailColor, "#ffaa00")
@@ -224,7 +225,10 @@ test("switches slot sessions without remounting or leaking prior metrics", async
     assert.equal(mounted.panelMounts(), 1)
     assert.equal(mounted.panelDisposals(), 0)
     assert.equal(mounted.slotRenders(), 1)
-    for (const type of eventTypes) assert.equal(mounted.registrationCount(type), 1)
+    for (const type of eventTypes) {
+      assert.equal(mounted.registrationCount(type), 2)
+      assert.equal(mounted.unsubscribeCount(type), 1)
+    }
     const listCallCount = mounted.listCalls.length
     const messageCallCount = mounted.messageCalls.length
     await mounted.setSessionID()
@@ -290,10 +294,10 @@ test("keeps mounted tabs independent and loads a chip without a sidebar", async 
     assert.equal(extra.view().summaryText, "20")
     assert.match(mounted.chipText(), /Tok.*30/)
     mounted.unmount()
-    assert.equal(mounted.unsubscribeCount("session.usage.updated"), 1)
+    assert.equal(mounted.unsubscribeCount("session.usage.updated"), 2)
     await mounted.unload()
     assert.deepEqual(mounted.registeredTypes(), [])
-    assert.equal(mounted.unsubscribeCount("session.usage.updated"), 2)
+    assert.equal(mounted.unsubscribeCount("session.usage.updated"), 3)
   } finally { extra?.dispose(); await mounted.dispose() }
 })
 

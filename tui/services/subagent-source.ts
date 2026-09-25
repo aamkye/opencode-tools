@@ -1,6 +1,7 @@
 import type { OpenCodeEvent } from "@opencode/client"
 
 import type { SubagentSnapshot, SubagentSnapshotLoader } from "./subagent-snapshot.js"
+import { createSnapshotRefreshTracker } from "./snapshot-refresh.js"
 
 export type RetainedFailures = Record<string, Record<string, number>>
 
@@ -85,6 +86,7 @@ export function createSubagentSource({
   const knownDirectChildIDs = new Set<string>()
   const listeners = new Set<() => void>()
   const retryTimers = new Set<unknown>()
+  const refresh = createSnapshotRefreshTracker()
 
   function notify(): void {
     for (const listener of [...listeners]) {
@@ -185,6 +187,8 @@ export function createSubagentSource({
     try {
       const snapshot = await loadSnapshot(capturedParentID, {
         signal: controller.signal,
+        previous: currentState?.phase === "ready" || currentState?.phase === "stale" ? currentState.snapshot : undefined,
+        refresh: refresh.capture(),
         onChildIDs(childIDs) {
           if (!isCurrent(capturedParentID, capturedGeneration, controller)) return
           replaceKnownChildIDs(childIDs)
@@ -195,6 +199,7 @@ export function createSubagentSource({
       mergeFailures()
       pruneFailures(capturedParentID, snapshot.childIDs)
       if (!isCurrent(capturedParentID, capturedGeneration, controller)) return
+      refresh.clear()
       currentState = {
         phase: "ready",
         parentID: capturedParentID,
@@ -204,6 +209,7 @@ export function createSubagentSource({
       notify()
     } catch {
       if (!isCurrent(capturedParentID, capturedGeneration, controller)) return
+      refresh.full()
       const retryDelay = RETRY_DELAYS_MS[attempt]
       if (retryDelay !== undefined) {
         let timer: unknown
@@ -311,6 +317,7 @@ export function createSubagentSource({
   const unsubscribers = REFRESH_EVENTS.map((type) => onEvent(type, (event) => {
     if (disposed || parentID === "") return
     if (event.type === "server.connected") {
+      refresh.add(event)
       invalidateAndSchedule()
       return
     }
@@ -322,8 +329,10 @@ export function createSubagentSource({
       event.type === "session.execution.failed" || event.type === "session.execution.interrupted"
       || event.type === "session.step.failed" || event.type === "session.compaction.failed"
     )) {
+      refresh.add(event)
       recordFailure(childID, event.created)
     } else if (childID === parentID || known(childID) || recoverUnknownTopology(childID)) {
+      refresh.add(event)
       invalidateAndSchedule()
     }
   }))
@@ -337,6 +346,8 @@ export function createSubagentSource({
     topologyKnown = false
     knownDirectChildIDs.clear()
     parentID = nextParentID
+    refresh.clear()
+    refresh.full()
     if (nextParentID === "") {
       currentState = undefined
       notify()

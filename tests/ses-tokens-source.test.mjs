@@ -425,7 +425,7 @@ test("disposal during retry clears timers unsubscribes events and blocks updates
   await settle()
   assert.deepEqual(scheduler.pendingDelays(), [2_000])
   events.emit({ type: "session.usage.updated", data: { sessionID: "root" } })
-  assert.deepEqual(scheduler.pendingDelays(), [2_000, 200])
+  assert.deepEqual(scheduler.pendingDelays(), [200])
 
   source.dispose()
   source.dispose()
@@ -441,4 +441,38 @@ test("disposal during retry clears timers unsubscribes events and blocks updates
   assert.deepEqual(calls, ["root"])
   assert.equal(source.state(), stateAtDisposal)
   assert.equal(notifications.length, notificationCount)
+})
+
+test("accumulates targeted invalidations across superseded loads and recovers with a full refresh", async () => {
+  const contexts = []
+  const pending = deferred()
+  const complete = snapshot("root", "a", "b")
+  const { source, events, scheduler } = createHarness(async (_id, context) => {
+    contexts.push(context)
+    if (contexts.length === 2) return pending.promise
+    if (contexts.length === 4) throw new Error("offline")
+    return complete
+  })
+  source.setSessionID("root")
+  await settle()
+  events.emit({ type: "session.usage.updated", data: { sessionID: "a" } })
+  await scheduler.runNext(200)
+  assert.deepEqual(contexts[1].refresh.messages, ["a"])
+  assert.equal(contexts[1].previous, complete)
+  events.emit({ type: "session.compaction.ended", data: { sessionID: "b" } })
+  assert.equal(contexts[1].signal.aborted, true)
+  pending.resolve(snapshot("root", "obsolete"))
+  await settle()
+  assert.equal(source.state().snapshot, complete)
+  await scheduler.runNext(200)
+  assert.deepEqual(contexts[2].refresh.messages, ["a", "b"])
+  assert.deepEqual(contexts[2].refresh.metadata, ["b"])
+  events.emit({ type: "session.revert.committed", data: { sessionID: "a" } })
+  await scheduler.runNext(200)
+  await scheduler.runNext(2_000)
+  assert.equal(contexts[4].refresh, undefined)
+  events.emit({ type: "server.connected", data: {} })
+  await scheduler.runNext(200)
+  assert.equal(contexts[5].refresh, undefined)
+  source.dispose()
 })
