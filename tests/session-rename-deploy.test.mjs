@@ -96,7 +96,7 @@ test("deployment retires managed rename artifacts and registrations without touc
       theme: "preserved", plugin: unrelatedPlugins,
     })
     const current = await snapshot(targetRoot)
-    assert.deepEqual(Object.keys(current).sort(), ["tui.json", "opencode.json", "opencode-tools-shared.js", ...deployedSpecs.flatMap((spec) =>
+    assert.deepEqual(Object.keys(current).sort(), ["tui.json", "opencode.json", ...deployedSpecs.flatMap((spec) =>
       (spec.endsWith("quota-service") ? ["package.json", "index.js"] : ["package.json", "index.js", "tui.js"]).map((file) => `${spec.slice(2)}/${file}`),
     )].sort())
     if (previous) assert.deepEqual(current, previous)

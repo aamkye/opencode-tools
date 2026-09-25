@@ -15,7 +15,6 @@ const keys = ["home", "context", "ses-tokens", "subagent", "quota", "mcp"]
 const specs = keys.map((key) => `./opencode-tools-${key}`)
 const companion = "./opencode-tools-quota-service"
 const deployedFiles = [
-  "opencode-tools-shared.js",
   ...keys.flatMap((key) => ["package.json", "index.js", "tui.js"].map((file) => `opencode-tools-${key}/${file}`)),
   "opencode-tools-quota-service/package.json", "opencode-tools-quota-service/index.js",
 ]
@@ -90,6 +89,7 @@ for (const mode of ["local", "global"]) {
     } })
     await put(root, "plugins/unrelated.js", "preserve\n")
     const obsolete = [
+      "opencode-tools-shared.js",
       ...keys.flatMap((key) => [`opencode-tools-${key}.js`, `tui/${key}.tsx`]),
       ...["lsp", "todo", "token-report"].flatMap((key) => [`opencode-tools-${key}.js`, `tui/${key}.tsx`, `opencode-tools-${key}/package.json`, `plugins/opencode-tools-${key}/index.js`]),
       `${obsoleteNamespace}.js`, `${obsoleteNamespace}.ts`, `${obsoleteNamespace}-zai.tsx`, `${obsoleteNamespace}-openai.tsx`, `${obsoleteNamespace}-shared.tsx`,

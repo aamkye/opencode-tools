@@ -56,18 +56,6 @@ function solidTransformPlugin() {
   }
 }
 
-function sharedImport(path) {
-  return {
-    name: "external-shared-artifact",
-    setup(buildApi) {
-      buildApi.onResolve({ filter: /(?:^|\/)shared\/opencode-tools-shared(?:\.js)?$/ }, () => ({
-        external: true,
-        path,
-      }))
-    },
-  }
-}
-
 async function writePackage(distRoot, name, paired) {
   const packageRoot = resolve(distRoot, name)
   await mkdir(packageRoot, { recursive: true })
@@ -85,16 +73,9 @@ export async function buildPlugins({
   validatePluginManifest(manifest)
   await mkdir(distRoot, { recursive: true })
   await rm(resolve(distRoot, "plugins/opencode-tools-tokens.js"), { force: true })
+  await rm(resolve(distRoot, "opencode-tools-shared.js"), { force: true })
   await Promise.all(retiredPluginPaths.map((path) => rm(resolve(distRoot, path), { recursive: true, force: true })))
   await Promise.all(manifest.map((entry) => rm(resolve(distRoot, `opencode-tools-${entry.key}.js`), { force: true })))
-
-  const shared = await build({
-    ...common,
-    entryPoints: ["shared/opencode-tools-shared.ts"],
-    logLevel,
-    outfile: resolve(distRoot, "opencode-tools-shared.js"),
-    plugins: [solidTransformPlugin()],
-  })
 
   const featureResults = await mapBuilds(manifest, async (entry) => {
     const packageRoot = await writePackage(distRoot, `opencode-tools-${entry.key}`, true)
@@ -111,7 +92,7 @@ export async function buildPlugins({
       entryPoints: [entry.source],
       logLevel,
       outfile: resolve(distRoot, entry.outfile),
-      plugins: [solidTransformPlugin(), sharedImport("../opencode-tools-shared.js")],
+      plugins: [solidTransformPlugin()],
     })
     return [entry.key, result]
   })
@@ -125,7 +106,7 @@ export async function buildPlugins({
     outfile: resolve(quotaRoot, "index.js"),
   })
 
-  return { shared, features, quotaService }
+  return { features, quotaService }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

@@ -151,7 +151,8 @@ This is a native server configuration example for either destination:
 Paths resolve relative to the configuration declaring them. Each feature has a
 minimal server entrypoint and a `./tui` export that the CLI discovers through the
 connected server. Register the **package directory**, not its `tui.js` file.
-Keep `opencode-tools-shared.js` beside the package directories.
+Each package's `tui.js` contains its section's implementation and shared helpers;
+there is no companion shared JavaScript file to copy.
 
 On a remote server, install the quota companion there: host-managed credential
 resolution and authenticated quota requests execute on that server. The UI uses
@@ -291,7 +292,6 @@ previous release and its backed-up configuration together.
 
 ```text
 dist/
-├── opencode-tools-shared.js
 ├── opencode-tools-home/{package.json,index.js,tui.js}
 ├── opencode-tools-context/{package.json,index.js,tui.js}
 ├── opencode-tools-ses-tokens/{package.json,index.js,tui.js}
@@ -306,7 +306,15 @@ Their runtime IDs are `aamkye.opencode-tools-home`,
 `aamkye.opencode-tools-context`, `aamkye.opencode-tools-ses-tokens`,
 `aamkye.opencode-tools-subagent`, `aamkye.opencode-tools-quota`,
 `aamkye.opencode-tools-mcp`, and `aamkye.opencode-tools-quota-service`.
-The shared file is imported by the features, never registered as a plugin.
+Each `tui.js` is a self-contained UI bundle built from modular TypeScript source.
+Common code is duplicated between bundles in exchange for independent files.
+The minimal package wrapper supplies V2 discovery (`package.json`) and a server
+registration stub (`index.js`). An isolated OpenCode 2.0.16 test loaded a CLI
+package exporting `./tui`, but did not activate the equivalent direct JS file
+registered through `cli.json`; package directories remain the supported install
+format here. Home and Quota still share a renderer/location-scoped provider hub
+across their independent bundles. The quota RPC companion remains a separate
+server package. Deployment removes the previous `opencode-tools-shared.js` file.
 
 Solid, OpenTUI, and the native CLI plugin context remain host-owned imports.
 Stateless server plugin/RPC helpers and ordinary dependencies are bundled so

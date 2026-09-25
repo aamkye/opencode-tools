@@ -18,7 +18,12 @@ type ServiceRecord<T> = {
   dispose?: FeatureCleanup
 }
 
-const rendererServices = new WeakMap<Plugin.Context["renderer"], Map<ServiceKey, ServiceRecord<unknown>>>()
+// Independent feature bundles must share leases without a shared JS artifact.
+// Version the key when changing the registry contract; weak keys retain renderer isolation.
+const registryKey = Symbol.for("aamkye.opencode-tools.renderer-services.v1")
+type RendererServices = WeakMap<Plugin.Context["renderer"], Map<ServiceKey, ServiceRecord<unknown>>>
+const registryHost = globalThis as typeof globalThis & { [registryKey]?: RendererServices }
+const rendererServices = registryHost[registryKey] ??= new WeakMap()
 
 function serviceDisposeOf(value: unknown): FeatureCleanup | undefined {
   if ((!value || typeof value !== "object") && typeof value !== "function") return undefined

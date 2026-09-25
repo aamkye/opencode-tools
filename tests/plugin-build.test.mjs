@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { existsSync } from "node:fs"
-import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { builtinModules, registerHooks } from "node:module"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
@@ -29,7 +29,6 @@ const retiredPaths = [
   "plugins/session-title.ts",
 ]
 const expectedArtifacts = [
-  sharedArtifact,
   ...pluginManifest.flatMap((entry) => ["package.json", "index.js", "tui.js"].map((file) => `dist/opencode-tools-${entry.key}/${file}`)),
   "dist/opencode-tools-quota-service/package.json",
   "dist/opencode-tools-quota-service/index.js",
@@ -46,6 +45,7 @@ registerHooks({
 function createApi() {
   const slots = new Set()
   const events = new Set()
+  const fetches = []
   const location = { directory: "/fixture" }
   const api = {
     options: {}, renderer: {}, location,
@@ -53,7 +53,7 @@ function createApi() {
       slot(input) { slots.add(input); return () => slots.delete(input) },
     },
     client: {
-      rpc() { return { async fetch(input) { return { provider: input.provider, configured: false, result: { kind: "authentication-required" } } } } },
+      rpc() { return { async fetch(input) { fetches.push(input.provider); return { provider: input.provider, configured: false, result: { kind: "authentication-required" } } } } },
     },
     data: {
       location: { default: () => location },
@@ -61,7 +61,7 @@ function createApi() {
     },
     storage: { store(_key, { initial }) { const state = structuredClone(initial); return [state, async (fn) => fn(state)] } },
   }
-  return { api, slots, events }
+  return { api, slots, events, fetches }
 }
 
 function inputNames(result) {
@@ -90,6 +90,7 @@ before(async () => {
   buildRoot = await mkdtemp(resolve(tempRoot, "opencode-tools-build-"))
   await mkdir(resolve(buildRoot, "dist/plugins"), { recursive: true })
   await writeFile(resolve(buildRoot, "dist/plugins/opencode-tools-tokens.js"), "stale artifact")
+  await writeFile(resolve(buildRoot, sharedArtifact), "stale shared artifact")
   for (const path of retiredPaths) {
     const target = resolve(buildRoot, "dist", path)
     if (path.endsWith("opencode-tools-token-report")) {
@@ -114,8 +115,8 @@ after(async () => {
 test("build:plugins emits the manifest artifact layout and return shape", async () => {
   const pkg = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"))
   assert.equal(pkg.scripts["build:plugins"], "node build-plugins.mjs")
-  assert.equal(expectedArtifacts.length, 21)
-  assert.deepEqual(Object.keys(buildResults).sort(), ["features", "quotaService", "shared"])
+  assert.equal(expectedArtifacts.length, 20)
+  assert.deepEqual(Object.keys(buildResults).sort(), ["features", "quotaService"])
   assert.equal(Object.keys(buildResults.features).length, 6)
   assert.deepEqual(Object.keys(buildResults.features), pluginManifest.map((entry) => entry.key))
 
@@ -130,6 +131,7 @@ test("build:plugins emits the manifest artifact layout and return shape", async 
     assert.doesNotMatch(output, /sourceMappingURL/, `${file} contains a source map reference`)
   }
   assert.equal(existsSync(resolve(buildRoot, "dist/plugins/opencode-tools-tokens.js")), false)
+  assert.equal(existsSync(resolve(buildRoot, sharedArtifact)), false)
 })
 
 test("build removes retired managed report and rename outputs", () => {
@@ -140,17 +142,16 @@ test("compiled MCP keeps collapse state reactive", () => {
   assert.match(contents["dist/opencode-tools-mcp/tui.js"], /get collapsed\(\)\s*\{/)
 })
 
-test("every standalone feature imports the external shared artifact", () => {
+test("each UI bundle has no external file or non-host package dependency", () => {
+  const allowed = /^(?:solid-js(?:\/|$)|@opentui\/|@opencode\/plugin\/tui$|@opencode\/theme(?:\/|$)|bun:|node:)/
   for (const entry of pluginManifest) {
     const result = buildResults.features[entry.key]
-    const output = contents[`dist/${entry.outfile}`]
-    assert.match(output, /from\s+["']\.\.\/opencode-tools-shared\.js["']/, entry.key)
-    assert.ok(
-      Object.values(result.metafile.outputs).some((metafileOutput) => metafileOutput.imports.some((dependency) => (
-        dependency.path === "../opencode-tools-shared.js" && dependency.external
-      ))),
-      `${entry.key} did not externalize the shared artifact`,
-    )
+    for (const output of Object.values(result.metafile.outputs)) {
+      for (const dependency of output.imports) {
+        assert.equal(dependency.external, true)
+        assert.ok(allowed.test(dependency.path) || builtinModules.includes(dependency.path), `${entry.key}: ${dependency.path}`)
+      }
+    }
   }
 })
 
@@ -164,17 +165,6 @@ test("feature metafiles contain their own source and no sibling feature", () => 
     assert.equal(inputs.some((file) => file.endsWith("/opencode-tools-quota-entry.js") || file === "opencode-tools-quota-entry.js"), false)
   }
 
-  const sharedInputs = inputNames(buildResults.shared)
-  assert.ok(sharedInputs.some((file) => file.endsWith("tui/providers/zai.ts")))
-  assert.ok(sharedInputs.some((file) => file.endsWith("tui/providers/openai.ts")))
-  assert.ok(sharedInputs.some((file) => file.endsWith("tui/providers/opencode-go.ts")))
-  assert.ok(sharedInputs.some((file) => file.endsWith("tui/features/ses-tokens.ts")))
-  assert.ok(sharedInputs.some((file) => file.endsWith("tui/services/session-tree-snapshot.ts")))
-  assert.ok(sharedInputs.some((file) => file.endsWith("tui/services/ses-tokens-source.ts")))
-  assert.ok(sharedInputs.some((file) => file.endsWith("tui/features/subagent.ts")))
-  assert.ok(sharedInputs.some((file) => file.endsWith("tui/services/subagent-snapshot.ts")))
-  assert.ok(sharedInputs.some((file) => file.endsWith("tui/services/subagent-source.ts")))
-
   const sesTokensResult = buildResults.features["ses-tokens"]
   assert.ok(sesTokensResult, "missing ses-tokens build result")
   const sesTokensInputs = inputNames(sesTokensResult)
@@ -182,22 +172,21 @@ test("feature metafiles contain their own source and no sibling feature", () => 
   assert.equal(pluginManifest
     .filter((entry) => entry.key !== "ses-tokens")
     .every((entry) => !includesSource(sesTokensInputs, entry.source)), true)
-  assert.match(contents["dist/opencode-tools-ses-tokens/tui.js"], /from\s+["']\.\.\/opencode-tools-shared\.js["']/)
+  assert.equal(includesSource(sesTokensInputs, "tui/services/ses-tokens-source.ts"), true)
 
   const subagentResult = buildResults.features.subagent
   assert.ok(subagentResult, "missing subagent build result")
   const subagentInputs = inputNames(subagentResult)
   assert.equal(includesSource(subagentInputs, "tui/subagent.tsx"), true)
-  assert.equal(includesSource(subagentInputs, "tui/features/subagent.ts"), false)
-  assert.equal(includesSource(subagentInputs, "tui/services/subagent-snapshot.ts"), false)
-  assert.equal(includesSource(subagentInputs, "tui/services/subagent-source.ts"), false)
-  assert.match(contents["dist/opencode-tools-subagent/tui.js"], /from\s+["']\.\.\/opencode-tools-shared\.js["']/)
+  assert.equal(includesSource(subagentInputs, "tui/features/subagent.ts"), true)
+  assert.equal(includesSource(subagentInputs, "tui/services/subagent-snapshot.ts"), true)
+  assert.equal(includesSource(subagentInputs, "tui/services/subagent-source.ts"), true)
   assert.doesNotMatch(contents["dist/opencode-tools-subagent/tui.js"], /(?:^|["'])\.\.\/tui\//)
 })
 
 test("all UI host and built-in dependencies remain external", () => {
   const builtins = new Set(builtinModules.flatMap((name) => [name, name.replace(/^node:/, "")]))
-  const results = [buildResults.shared, buildResults.quotaService, ...Object.values(buildResults.features)].filter(Boolean)
+  const results = [buildResults.quotaService, ...Object.values(buildResults.features)]
 
   for (const result of results) {
     for (const output of Object.values(result.metafile.outputs)) {
@@ -225,23 +214,15 @@ test("bundles ordinary dependencies but never host runtime copies", () => {
     "strip-ansi",
   ]
 
-  assert.deepEqual(nodeModulePackageRoots(buildResults.shared), ["@opencode/plugin", "@opencode/schema", "zod"])
   assert.deepEqual(nodeModulePackageRoots(buildResults.quotaService), ["@opencode/plugin", "@opencode/schema", "zod"])
   for (const [feature, result] of Object.entries(buildResults.features)) {
-    assert.deepEqual(
-      nodeModulePackageRoots(result),
-      feature === "subagent" ? approvedSubagentPackages : [],
-      `${feature} bundled an unapproved package`,
-    )
+    const allowed = new Set(["@opencode/plugin", "@opencode/schema", "zod", ...approvedSubagentPackages])
+    for (const name of nodeModulePackageRoots(result)) assert.ok(allowed.has(name), `${feature} bundled ${name}`)
   }
 })
 
 test("paired package exports resolve to native definitions with stable IDs", async () => {
   const nonce = Date.now()
-  const shared = await import(`${pathToFileURL(resolve(buildRoot, sharedArtifact)).href}?shared=${nonce}`)
-  assert.equal("default" in shared, false)
-  assert.equal(typeof shared.createZaiProvider, "function")
-
   for (const entry of pluginManifest) {
     const packageRoot = resolve(buildRoot, `dist/opencode-tools-${entry.key}`)
     const pkg = JSON.parse(await readFile(resolve(packageRoot, "package.json"), "utf8"))
@@ -307,12 +288,9 @@ test("each artifact loads alone, activates only its feature, and cleans up", asy
     for (const entry of pluginManifest) {
       const featureRoot = resolve(isolatedRoot, entry.key)
       await mkdir(featureRoot)
-      await Promise.all([
-        copyFile(resolve(buildRoot, sharedArtifact), resolve(featureRoot, "opencode-tools-shared.js")),
-        cp(resolve(buildRoot, `dist/opencode-tools-${entry.key}`), resolve(featureRoot, `opencode-tools-${entry.key}`), { recursive: true }),
-      ])
+      await copyFile(resolve(buildRoot, "dist", entry.outfile), resolve(featureRoot, "section.mjs"))
 
-      const module = await import(`${pathToFileURL(resolve(featureRoot, entry.outfile)).href}?activation=${Date.now()}`)
+      const module = await import(pathToFileURL(resolve(featureRoot, "section.mjs")))
       const { api, slots, events } = createApi()
       let cleanup
       try {
@@ -334,6 +312,28 @@ test("each artifact loads alone, activates only its feature, and cleans up", asy
     await rm(isolatedRoot, { recursive: true, force: true })
   }
 })
+
+for (const order of [["home", "quota"], ["quota", "home"]]) {
+  test(`independent ${order.join("/")} bundles share provider requests until the last cleanup`, async () => {
+    const { api, fetches, events } = createApi()
+    const cleanups = []
+    try {
+      for (const key of order) {
+        const { default: plugin } = await import(pathToFileURL(resolve(buildRoot, `dist/opencode-tools-${key}/tui.js`)))
+        cleanups.push(await plugin.setup(api))
+      }
+      assert.deepEqual(fetches.sort(), ["openai", "zai"])
+      const activeEvents = events.size
+      assert.ok(activeEvents > 0)
+      await cleanups[0]()
+      assert.equal(events.size, activeEvents, "remaining feature lost its provider subscriptions")
+      await cleanups[1]()
+      assert.equal(events.size, 0)
+    } finally {
+      for (const cleanup of cleanups) await cleanup()
+    }
+  })
+}
 
 for (const field of ["id", "outfile"]) {
   test(`build rejects duplicate ${field} before creating feature output`, async () => {

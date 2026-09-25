@@ -9,7 +9,6 @@ import { pluginManifest, retiredPluginPaths, retiredPluginSpecs, validatePluginM
 
 const projectRoot = dirname(fileURLToPath(import.meta.url))
 const obsoleteNamespace = ["opencode", "quota"].join("-")
-const sharedArtifact = "opencode-tools-shared.js"
 const quotaCompanion = "opencode-tools-quota-service"
 const historicalManagedPaths = [
   `${obsoleteNamespace}.js`, `${obsoleteNamespace}.ts`,
@@ -19,6 +18,7 @@ const historicalManagedPaths = [
   "tokens.js", "tokens.ts", "plugins/tokens.js", "plugins/tokens.ts",
 ]
 const obsoleteFiles = [
+  "opencode-tools-shared.js",
   ...historicalManagedPaths,
   ...pluginManifest.flatMap((entry) => [entry.source, `opencode-tools-${entry.key}.js`, `plugins/opencode-tools-${entry.key}`]),
 ]
@@ -228,7 +228,7 @@ export async function deployPlugins(targetRoot, { logLevel = "info", projectConf
   try {
     await buildPlugins({ logLevel, distRoot })
     await mkdir(targetRoot, { recursive: true })
-    const artifacts = [sharedArtifact, quotaCompanion, ...pluginManifest.map((entry) => `opencode-tools-${entry.key}`)]
+    const artifacts = [quotaCompanion, ...pluginManifest.map((entry) => `opencode-tools-${entry.key}`)]
     await Promise.all(artifacts.map((artifact) => cp(join(distRoot, artifact), join(targetRoot, artifact), { recursive: true })))
     await Promise.all([...obsoleteFiles, ...retiredPluginPaths].map((path) => rm(join(targetRoot, path), { recursive: true, force: true })))
     for (const document of documents) {

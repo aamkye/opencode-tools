@@ -75,8 +75,21 @@ export default { ...plugin, async setup(context) {
       return dispose
     }
   } })
+  const client = new Proxy(context.client, { get(target, key) {
+    if (key !== "rpc") return Reflect.get(target, key)
+    return (...args) => {
+      const rpc = target.rpc(...args)
+      return new Proxy(rpc, { get(methods, name) {
+        if (name !== "fetch") return Reflect.get(methods, name)
+        return (input, ...rest) => {
+          record("quota-fetch", { id: plugin.id, provider: input.provider })
+          return methods.fetch(input, ...rest)
+        }
+      } })
+    }
+  } })
   const cleanup = await plugin.setup(new Proxy(context, { get(target, key) {
-    return key === "ui" ? ui : Reflect.get(target, key)
+    return key === "ui" ? ui : key === "client" ? client : Reflect.get(target, key)
   } }))
   record("setup", { id: plugin.id })
   return async () => { await cleanup?.(); record("cleanup", { id: plugin.id }) }
@@ -115,6 +128,8 @@ export default Plugin.define({ id: "opencode-tools.smoke-probe", setup(context) 
   }
   const task = (async () => {
     await waitFor(() => ids.every(id => receipts().some(r => r.kind === "setup" && r.id === id)))
+    assert.deepEqual(receipts().filter(r => r.kind === "quota-fetch").map(r => r.provider).sort(),
+      ["openai", "zai"], "Independent Home/Quota bundles must share initial provider requests")
     const location = context.location ?? context.data.location.default()
     const plugins = (await context.client.plugin.list({ location })).data
     record("plugins", { plugins })
