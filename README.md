@@ -59,6 +59,9 @@ descendant tree, including paginated messages and cross-worktree descendants.
 - Cache hit ratio = cache read / (input + cache write).
 - Counts use K/M/B suffixes with up to two decimal places and trimmed zeroes.
 - Refresh uses native events, a 200 ms debounce, and 2, 4, and 8 second retries.
+- The sidebar and footer chip share one source and computed totals per session.
+  Refreshes reuse unchanged session histories and token subtotals, fetching only
+  affected histories. Reconnects and recovery retries reload the full snapshot.
 - A failed background refresh preserves the last successful snapshot as `stale`.
   Initial loading shows `Loading...`; exhausted initial retries show
   `Usage unavailable`.
@@ -83,6 +86,11 @@ unavailable, and unselected states emit no panel output; a ready parent without
 children shows `No subagents`. Failure evidence is durable per parent through
 native plugin storage. Disclosures are local to the selected session.
 
+The sidebar and footer chip share one source per parent session. Refreshes
+separate topology, metadata, and message changes so unchanged histories can be
+reused. Running durations update without rescanning histories or recreating rows;
+the duration clock runs only while running entries are visible in the panel.
+
 ### Quota
 
 - **Z.AI:** 5H and 7D limits, reset countdowns, tool limits, and peak/off-peak
@@ -95,8 +103,11 @@ native plugin storage. Disclosures are local to the selected session.
   undocumented Solid hydration contract and fails closed if that changes.
 - **Refresh:** 10 seconds by default. Z.AI/OpenAI back off to five minutes when
   exhausted. Go uses the configured interval without exhausted backoff.
-  Countdown updates are one second, with reset-boundary refresh and a
-  ten-minute stale horizon.
+  Visible countdowns update once per second without rebuilding static rows.
+  The panel's display clock stops when collapsed or when no active countdown
+  is visible; provider polling and reset-boundary refresh continue. Failed
+  refreshes, including invalid Z.AI responses, retain prior usage as stale for
+  up to ten minutes.
 - **Presentation:** selected provider first, optional Other Providers group,
   remaining/used percentages, `stale` and `limited` states. Provider names,
   plans, and labels use normal text; bars and percentages use semantic colors.
@@ -190,8 +201,10 @@ environment variable can override global CLI settings for a single invocation.
 | Home | No options | No chip |
 
 Missing or invalid values use the defaults. Semi-collapsed keeps the main panel
-open and collapses Rest/Other Providers. Every session change resets ephemeral
-panel/group/child disclosure state, including a return to a previous session.
+open and collapses Rest/Other Providers. Background refreshes preserve your
+panel, group, and child disclosure choices for the selected session, including
+stale and recovery transitions. Changing sessions resets those choices to the
+configured defaults, including when returning to a previous session.
 
 The five panel plugins contribute display-only chips to `prompt.footer.status`:
 `Ctx 64%`, `Tok 29.11M`, `Sub 7/1/3`, `Q 46%`, and `MCP 4/0/0`.
@@ -274,9 +287,11 @@ Retired features:
 
 - **LSP panel/chip:** V2 does not run language servers.
 - **TODO panel/chip:** V2 2.0.16 has no equivalent session TODO feed.
-- **Token Reports:** report commands and report-only storage/accounting removed.
-- **Session rename:** custom command and server plugin removed; native title
-  behavior is left to OpenCode.
+- **Token Reports:** all eight `/tokens_*` commands, the `./token-report` package
+  export, and report-only storage/accounting removed. Live SesTokens and Context
+  accounting remain available.
+- **Session rename:** `/session-rename` and its server plugin removed; native
+  title behavior is left to OpenCode.
 
 Legacy root-level quota options are not interpreted by the runtime. Move
 `refreshIntervalSeconds` and `progressColors` under `quota`; move
@@ -323,6 +338,10 @@ Stateless server plugin/RPC helpers and ordinary dependencies are bundled so
 local deployments do not need a separate dependency installation. Builds retain
 import whitespace for the 2.0.16 host loader while minifying identifiers/syntax.
 
+Plugin and test-fixture builds use up to four parallel workers. Plain TypeScript
+goes through esbuild; TSX also uses the Solid Babel transform. If a build fails,
+active workers finish before the build reports the error.
+
 ## Layout and development
 
 Sidebar content stays within 37 terminal cells with no trailing whitespace.
@@ -366,6 +385,11 @@ git diff --check
 mandatory and includes fixtures against the published native types. Mounted
 and terminal rendering tests cover layout, colors, session resets, accounting,
 cancellation, failure retention, and cleanup.
+Regression coverage also checks shared-source lifetimes, selective refreshes,
+cached token totals, disclosure preservation, and countdown updates without row
+remounts. Build tests check independent UI bundles and dependency boundaries;
+deployment tests check migration cleanup, configuration preservation, and
+repeatable deployment.
 
 The smoke test requires installed `opencode` 2.0.16 and Python 3 with `pty`.
 It deploys into fresh HOME/XDG roots, starts a private-server TUI under a PTY
