@@ -5,6 +5,7 @@ import moduleResolver from "babel-plugin-module-resolver"
 import solidPreset from "babel-preset-solid"
 import { mkdirSync, readFileSync, rmSync } from "node:fs"
 import { basename, resolve } from "node:path"
+import { mapBuilds } from "../build-concurrency.mjs"
 
 const selected = new Set(process.argv.slice(2))
 const wanted = (outfile) => selected.size === 0 || selected.has(basename(outfile, ".mjs"))
@@ -41,7 +42,7 @@ for (const name of ["presentation-types", "presentation-format", "presentation-l
 }
 mkdirSync(".tmp-test", { recursive: true })
 
-for (const [entryPoint, outfile, conditions, plugins, external] of [
+const fixtures = [
   ["tests/quota-rpc.fixture.ts", ".tmp-test/quota-rpc.mjs"],
   ["tui/presentation/types.ts", ".tmp-test/presentation-types.mjs"],
   ["tui/presentation/format.ts", ".tmp-test/presentation-format.mjs"],
@@ -83,8 +84,8 @@ for (const [entryPoint, outfile, conditions, plugins, external] of [
   ["tui/services/subagent-source.ts", ".tmp-test/subagent-source.mjs", ["browser"]],
   ["tui/runtime/plugin.ts", ".tmp-test/plugin-runtime.mjs"],
   ["tui/features/collapse-options.ts", ".tmp-test/collapse-options.mjs"],
-]) {
-  if (!wanted(outfile)) continue
+]
+await mapBuilds(fixtures.filter(([, outfile]) => wanted(outfile)), async ([entryPoint, outfile, conditions, plugins, external]) => {
   await build({
     bundle: true,
     entryPoints: [entryPoint],
@@ -96,7 +97,7 @@ for (const [entryPoint, outfile, conditions, plugins, external] of [
     plugins,
     external,
   })
-}
+})
 
 const compactStatusOutfile = ".tmp-test/compact-status-row-render.mjs"
 if (wanted(compactStatusOutfile)) {

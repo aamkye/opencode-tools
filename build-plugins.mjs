@@ -4,6 +4,9 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { build } from "esbuild"
 import { transformAsync } from "@babel/core"
+import solidPreset from "babel-preset-solid"
+import tsPreset from "@babel/preset-typescript"
+import { mapBuilds } from "./build-concurrency.mjs"
 
 import { pluginManifest, retiredPluginPaths, validatePluginManifest } from "./plugin-manifest.mjs"
 
@@ -35,12 +38,7 @@ const common = {
 }
 
 async function transformSolid(code, filename) {
-  const solidPreset = (await import("babel-preset-solid")).default
-  const tsPreset = (await import("@babel/preset-typescript")).default
-  const presets = [[solidPreset, { moduleName: "@opentui/solid", generate: "universal" }]]
-  if (/\.[cm]?tsx?$/.test(filename)) {
-    presets.push([tsPreset])
-  }
+  const presets = [[solidPreset, { moduleName: "@opentui/solid", generate: "universal" }], [tsPreset]]
   const result = await transformAsync(code, { filename, configFile: false, babelrc: false, presets })
   return result?.code ?? code
 }
@@ -49,7 +47,7 @@ function solidTransformPlugin() {
   return {
     name: "solid-jsx-transform",
     setup(buildApi) {
-      buildApi.onLoad({ filter: /\.[cm]?tsx?$/ }, async (args) => {
+      buildApi.onLoad({ filter: /\.tsx$/ }, async (args) => {
         const code = await readFile(args.path, "utf8")
         const transformed = await transformSolid(code, args.path)
         return { contents: transformed, loader: "js" }
@@ -98,8 +96,7 @@ export async function buildPlugins({
     plugins: [solidTransformPlugin()],
   })
 
-  const features = {}
-  for (const entry of manifest) {
+  const featureResults = await mapBuilds(manifest, async (entry) => {
     const packageRoot = await writePackage(distRoot, `opencode-tools-${entry.key}`, true)
     // The server does not inject bare plugin imports for deployed local files.
     // Bundle the published, stateless define helper; keep CLI UI runtimes external.
@@ -109,14 +106,16 @@ export async function buildPlugins({
       logLevel,
       outfile: resolve(packageRoot, "index.js"),
     })
-    features[entry.key] = await build({
+    const result = await build({
       ...common,
       entryPoints: [entry.source],
       logLevel,
       outfile: resolve(distRoot, entry.outfile),
       plugins: [solidTransformPlugin(), sharedImport("../opencode-tools-shared.js")],
     })
-  }
+    return [entry.key, result]
+  })
+  const features = Object.fromEntries(featureResults)
 
   const quotaRoot = await writePackage(distRoot, "opencode-tools-quota-service", false)
   const quotaService = await build({
