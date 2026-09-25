@@ -1,15 +1,19 @@
-import type { Message, Session } from "@opencode-ai/sdk/v2"
+import type { SessionMessageInfo, SessionInfo } from "@opencode/client"
+import type { SnapshotRefresh } from "./snapshot-refresh.js"
 
-export type SessionTreeRecord = Pick<Session, "id" | "parentID">
+export type SessionTreeRecord = Pick<SessionInfo, "id" | "parentID">
 
 export type SessionTreeSnapshot = {
   sessionIDs: readonly string[]
-  messages: readonly Message[]
+  messages: readonly SessionMessageInfo[]
+  messagesBySession?: ReadonlyMap<string, readonly SessionMessageInfo[]>
 }
 
 export type SessionTreeSnapshotLoadContext = {
   signal: AbortSignal
   onSessionIDs(sessionIDs: readonly string[]): void
+  previous?: SessionTreeSnapshot
+  refresh?: SnapshotRefresh
 }
 
 export type SessionTreeSnapshotLoader = (
@@ -19,16 +23,18 @@ export type SessionTreeSnapshotLoader = (
 
 export type LoadSessionTreeSnapshotOptions = {
   rootSessionID: string
-  listSessions(): Promise<readonly SessionTreeRecord[]>
-  listMessages(sessionID: string): Promise<readonly Message[]>
+  listSessions(signal: AbortSignal): Promise<readonly SessionTreeRecord[]>
+  listMessages(sessionID: string, signal: AbortSignal): Promise<readonly SessionMessageInfo[]>
   concurrency?: number
   signal?: AbortSignal
   onSessionIDs?(sessionIDs: readonly string[]): void
+  previous?: SessionTreeSnapshot
+  refresh?: SnapshotRefresh
 }
 
 export type CreateSessionTreeSnapshotLoaderOptions = Omit<
   LoadSessionTreeSnapshotOptions,
-  "rootSessionID" | "signal" | "onSessionIDs"
+  "rootSessionID" | "signal" | "onSessionIDs" | "previous" | "refresh"
 >
 
 type MessageRequestLimiter = <Value>(
@@ -152,12 +158,18 @@ async function loadSessionTreeSnapshotWithLimiter(
   limitMessageRequest: MessageRequestLimiter,
 ): Promise<SessionTreeSnapshot> {
   throwIfAborted(options.signal)
-  const sessions = await options.listSessions()
+  const previous = options.previous?.sessionIDs[0] === options.rootSessionID && options.refresh
+    ? options.previous : undefined
+  const sessionIDs = previous && !options.refresh!.topology
+    ? previous.sessionIDs
+    : collectSessionTreeIDs(options.rootSessionID, indexSessionsByParent(
+      await options.listSessions(options.signal ?? new AbortController().signal),
+    ))
   throwIfAborted(options.signal)
-  const sessionIDs = collectSessionTreeIDs(options.rootSessionID, indexSessionsByParent(sessions))
   options.onSessionIDs?.(sessionIDs)
   throwIfAborted(options.signal)
-  const messagesBySession: (readonly Message[])[] = new Array(sessionIDs.length)
+  const messagesBySession: (readonly SessionMessageInfo[])[] = new Array(sessionIDs.length)
+  const dirty = new Set(options.refresh?.messages)
   const attemptController = new AbortController()
   const abortFromParent = () => attemptController.abort(
     options.signal ? abortReason(options.signal) : undefined,
@@ -172,10 +184,15 @@ async function loadSessionTreeSnapshotWithLimiter(
     while (!signal.aborted && cursor < sessionIDs.length) {
       const index = cursor
       cursor += 1
+      const cached = previous?.messagesBySession?.get(sessionIDs[index])
+      if (cached && !dirty.has(sessionIDs[index])) {
+        messagesBySession[index] = cached
+        continue
+      }
       try {
         messagesBySession[index] = await limitMessageRequest(
           signal,
-          () => options.listMessages(sessionIDs[index]),
+          () => options.listMessages(sessionIDs[index], signal),
         )
       } catch (error) {
         if (!failed && !options.signal?.aborted) {
@@ -195,7 +212,13 @@ async function loadSessionTreeSnapshotWithLimiter(
   if (options.signal) options.signal.removeEventListener("abort", abortFromParent)
   if (failed) throw firstError
   throwIfAborted(options.signal)
-  return { sessionIDs, messages: messagesBySession.flat() }
+  let messages: readonly SessionMessageInfo[] | undefined
+  return {
+    sessionIDs,
+    // Consumers that aggregate by history need no second, flattened copy.
+    get messages() { return messages ??= messagesBySession.flat() },
+    messagesBySession: new Map(sessionIDs.map((id, index) => [id, messagesBySession[index]])),
+  }
 }
 
 export function createSessionTreeSnapshotLoader(
@@ -207,5 +230,7 @@ export function createSessionTreeSnapshotLoader(
     rootSessionID,
     signal: context.signal,
     onSessionIDs: context.onSessionIDs,
+    previous: context.previous,
+    refresh: context.refresh,
   }, limitMessageRequest)
 }

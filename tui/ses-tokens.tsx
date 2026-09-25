@@ -1,33 +1,28 @@
-import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js"
+import type { Plugin } from "@opencode/plugin/tui"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show, type JSX } from "solid-js"
+import { createSessionSource } from "../lib/session-source.js"
 
 import {
   CompactPanel,
   createSessionTreeSnapshotLoader,
-  createSesTokensPanelModel,
+  createSesTokensModelCache,
   createSesTokensSource,
+  createSessionSourcePool,
   defineTuiPlugin,
+  panelTheme,
   pluginDescriptor,
   resolveChipOption,
   resolveCollapseDefault,
   StatusChip,
   type PanelTheme,
   type SesTokensPanelModel,
-  type SesTokensSource,
   type SesTokensSourceDependencies,
   type SesTokensSourceState,
+  type TuiFeatureContext,
 } from "../shared/opencode-tools-shared.js"
 
 const descriptor = pluginDescriptor("ses-tokens")
-export const sesTokensSourceTestKey = Symbol("ses-tokens-source-test")
-
-type SesTokensSourceFactory = (dependencies: SesTokensSourceDependencies) => SesTokensSource
 type MetricRow = { label: string; value: string; total?: boolean }
-
-function sourceFactory(meta: unknown): SesTokensSourceFactory {
-  if (typeof meta !== "object" || meta === null) return createSesTokensSource
-  const candidate = (meta as Record<PropertyKey, unknown>)[sesTokensSourceTestKey]
-  return typeof candidate === "function" ? candidate as SesTokensSourceFactory : createSesTokensSource
-}
 
 function metricRows(model: SesTokensPanelModel): readonly MetricRow[] {
   return [
@@ -69,33 +64,50 @@ function SesTokensMetricRow(props: { row: MetricRow; theme: () => PanelTheme }) 
   )
 }
 
-const plugin = defineTuiPlugin(descriptor, (context, api, options, meta) => {
-  const defaultCollapsed = resolveCollapseDefault(options, false).collapsed
-  const chipEnabled = resolveChipOption(options, true).enabled
-  const directory = api.state.path.directory
-  const loadSnapshot = createSessionTreeSnapshotLoader({
-    async listSessions() {
-      const result = await api.client.session.list({ directory })
-      if (result.error !== undefined || !result.data) throw result.error ?? new Error("session list unavailable")
-      return result.data
-    },
-    async listMessages(sessionID) {
-      const result = await api.client.session.messages({ sessionID, directory })
-      if (result.error !== undefined || !result.data) throw result.error ?? new Error("session messages unavailable")
-      return result.data.map((record) => record.info)
-    },
-  })
-  const source = sourceFactory(meta)({
-    loadSnapshot,
-    onEvent: (type, handler) => api.event.on(type, handler as never),
+export function setupSesTokens(
+  scope: TuiFeatureContext,
+  api: Plugin.Context,
+  timers: Pick<SesTokensSourceDependencies, "setTimer" | "clearTimer"> = {
     setTimer: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
     clearTimer: (timer) => globalThis.clearTimeout(timer as ReturnType<typeof globalThis.setTimeout>),
+  },
+) {
+  const defaultCollapsed = resolveCollapseDefault(api.options, false).collapsed
+  const chipEnabled = resolveChipOption(api.options, true).enabled
+  const theme = () => panelTheme(api)
+  const sessions = createSessionSource(api.client)
+  // Shared snapshots yield the same model in both surfaces; weak keys keep
+  // cached subtotals scoped to histories still owned by live session sources.
+  const modelForSnapshot = createSesTokensModelCache()
+  // One loader shares its four request slots across every mounted view.
+  const loadSnapshot = createSessionTreeSnapshotLoader({
+    listSessions: (signal) => sessions.listSessions({}, signal),
+    listMessages: (sessionID, signal) => sessions.listMessages(sessionID, signal),
   })
-  const [state, setState] = createSignal<SesTokensSourceState | undefined>(source.state())
-  context.onCleanup(source.dispose)
-  context.onCleanup(source.subscribe(() => setState(source.state())))
+  const sources = createSessionSourcePool((sessionID) => {
+    const source = createSesTokensSource({ loadSnapshot, onEvent: api.data.on, ...timers })
+    source.setSessionID(sessionID)
+    return source
+  })
+  scope.onCleanup(() => sources.dispose())
 
-  function SesTokensPanel(props: { sessionID: string }) {
+  function useState(sessionID: () => string) {
+    const [state, setState] = createSignal<SesTokensSourceState | undefined>()
+    createEffect(() => {
+      const lease = sources.acquire(sessionID())
+      setState(lease?.source.state())
+      if (!lease) return
+      const unsubscribe = lease.source.subscribe(() => setState(lease.source.state()))
+      onCleanup(() => {
+        unsubscribe()
+        lease.release()
+      })
+    })
+    return state
+  }
+
+  function SesTokensPanel(props: { sessionID: string; state: () => SesTokensSourceState | undefined }) {
+    const state = props.state
     const [collapsed, setCollapsed] = createSignal(defaultCollapsed)
     createEffect(() => {
       props.sessionID
@@ -104,7 +116,7 @@ const plugin = defineTuiPlugin(descriptor, (context, api, options, meta) => {
     const model = createMemo(() => {
       const current = state()
       return current?.phase === "ready" || current?.phase === "stale"
-        ? createSesTokensPanelModel(current.snapshot.messages)
+        ? modelForSnapshot(current.snapshot)
         : undefined
     })
     const rows = createMemo(() => {
@@ -133,18 +145,18 @@ const plugin = defineTuiPlugin(descriptor, (context, api, options, meta) => {
         summary={summary()}
         onToggle={toggle}
         footerDivider={!collapsed()}
-        theme={() => api.theme.current}
+        theme={theme}
       >
         <Show
           when={model()}
           fallback={
-            <text fg={api.theme.current.textMuted}>
+            <text fg={theme().textMuted}>
               {state()?.phase === "unavailable" ? "Usage unavailable" : "Loading..."}
             </text>
           }
         >
           <For each={rows()}>
-            {(row) => <SesTokensMetricRow row={row} theme={() => api.theme.current} />}
+            {(row) => <SesTokensMetricRow row={row} theme={theme} />}
           </For>
         </Show>
       </CompactPanel>
@@ -155,39 +167,39 @@ const plugin = defineTuiPlugin(descriptor, (context, api, options, meta) => {
 
   function SesTokensSlot(props: { sessionID?: string }) {
     const sessionID = () => props.sessionID ?? ""
-    createEffect(() => source.setSessionID(sessionID()))
+    const state = useState(sessionID)
     return (
       <Show when={sessionID() !== ""}>
-        <SesTokensPanel sessionID={sessionID()} />
+        <SesTokensPanel sessionID={sessionID()} state={state} />
       </Show>
     )
   }
 
-  function SesTokensChip(props: { theme: () => PanelTheme }) {
+  function SesTokensChip(props: { sessionID?: string }) {
+    const state = useState(() => props.sessionID ?? "")
     const model = createMemo(() => {
       const current = state()
       return current?.phase === "ready" || current?.phase === "stale"
-        ? createSesTokensPanelModel(current.snapshot.messages)
+        ? modelForSnapshot(current.snapshot)
         : undefined
     })
     return (
       <Show when={model()}>
-        <StatusChip label="Tok" segments={model()!.summary} theme={props.theme} />
+        <StatusChip label="Tok" segments={model()!.summary} theme={theme} />
       </Show>
     )
   }
 
-  api.slots.register({
-    order: descriptor.slotOrder,
-    slots: {
-      sidebar_content(_ctx, props) {
-        return <SesTokensSlot sessionID={props.session_id} />
-      },
-      session_prompt_right() {
-        return chipEnabled ? <SesTokensChip theme={() => api.theme.current} /> : null
-      },
-    },
-  })
-})
+  scope.onCleanup(api.ui.slot({
+    append: "sidebar.content",
+    render: (props) => <SesTokensSlot sessionID={props.sessionID} />,
+  }))
+  if (chipEnabled) {
+    scope.onCleanup(api.ui.slot({
+      append: "prompt.footer.status",
+      render: (props) => <SesTokensChip sessionID={props.sessionID} />,
+    }))
+  }
+}
 
-export default plugin
+export default defineTuiPlugin(descriptor, setupSesTokens)

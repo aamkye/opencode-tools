@@ -1,8 +1,8 @@
-import type { TuiDispose, TuiPluginApi, TuiPluginModule, TuiPluginOptions } from "@opencode-ai/plugin/tui"
+import { Plugin } from "@opencode/plugin/tui"
 
 import type { PluginManifestEntry } from "./manifest.js"
 
-type FeatureCleanup = TuiDispose
+type FeatureCleanup = Plugin.Cleanup
 
 export type ServiceKey = PropertyKey
 export type ServiceValue<T> = T extends object | FeatureCleanup ? T & { dispose?: FeatureCleanup } : T
@@ -18,7 +18,12 @@ type ServiceRecord<T> = {
   dispose?: FeatureCleanup
 }
 
-const apiServices = new WeakMap<TuiPluginApi, Map<ServiceKey, ServiceRecord<unknown>>>()
+// Independent feature bundles must share leases without a shared JS artifact.
+// Version the key when changing the registry contract; weak keys retain renderer isolation.
+const registryKey = Symbol.for("aamkye.opencode-tools.renderer-services.v1")
+type RendererServices = WeakMap<Plugin.Context["renderer"], Map<ServiceKey, ServiceRecord<unknown>>>
+const registryHost = globalThis as typeof globalThis & { [registryKey]?: RendererServices }
+const rendererServices = registryHost[registryKey] ??= new WeakMap()
 
 function serviceDisposeOf(value: unknown): FeatureCleanup | undefined {
   if ((!value || typeof value !== "object") && typeof value !== "function") return undefined
@@ -26,12 +31,14 @@ function serviceDisposeOf(value: unknown): FeatureCleanup | undefined {
   return typeof dispose === "function" ? dispose.bind(value) : undefined
 }
 
+// Location-dependent services include directory/workspace in their key.
 export function acquireService<T>(
-  api: TuiPluginApi,
+  api: Plugin.Context,
   key: ServiceKey,
   factory: ServiceFactory<T>,
 ): ServiceLease<T> {
-  let services = apiServices.get(api)
+  const renderer = api.renderer
+  let services = rendererServices.get(renderer)
   let record = services?.get(key) as ServiceRecord<T> | undefined
 
   if (!record) {
@@ -39,7 +46,7 @@ export function acquireService<T>(
     record = { value, references: 0, dispose: serviceDisposeOf(value) }
     services ??= new Map()
     services.set(key, record)
-    apiServices.set(api, services)
+    rendererServices.set(renderer, services)
   }
 
   record.references += 1
@@ -50,12 +57,12 @@ export function acquireService<T>(
     async release() {
       if (released) return
       released = true
-      const activeServices = apiServices.get(api)
+      const activeServices = rendererServices.get(renderer)
       if (!activeServices || activeServices.get(key) !== record) return
       record.references -= 1
       if (record.references > 0) return
       activeServices.delete(key)
-      if (activeServices.size === 0) apiServices.delete(api)
+      if (activeServices.size === 0) rendererServices.delete(renderer)
       await record.dispose?.()
     },
   }
@@ -67,21 +74,19 @@ export type TuiFeatureContext = {
 }
 
 export type FeatureActivation = (
-  context: TuiFeatureContext,
-  api: TuiPluginApi,
-  options: TuiPluginOptions | undefined,
-  meta: unknown,
-) => void | FeatureCleanup | Promise<void | FeatureCleanup>
+  scope: TuiFeatureContext,
+  api: Plugin.Context,
+) => void | Plugin.Cleanup | Promise<void | Plugin.Cleanup>
 
 export function defineTuiPlugin(
   descriptor: PluginManifestEntry,
   activate: FeatureActivation,
-): TuiPluginModule & { id: string } {
-  return {
+): Plugin.Definition {
+  return Plugin.define({
     id: descriptor.id,
-    async tui(api, options, meta) {
-      const cleanups: FeatureCleanup[] = []
-      const context: TuiFeatureContext = {
+    async setup(api) {
+      const cleanups: Plugin.Cleanup[] = []
+      const scope: TuiFeatureContext = {
         onCleanup(cleanup) {
           cleanups.push(cleanup)
           return cleanup
@@ -94,48 +99,34 @@ export function defineTuiPlugin(
       }
 
       let cleanupPromise: Promise<void> | undefined
-      const cleanup = async (activationFailure?: { error: unknown }) => {
-        cleanupPromise ??= (async () => {
-          let cleanupError: unknown
-          let hasCleanupError = false
-          while (cleanups.length > 0) {
-            const dispose = cleanups.pop()
-            if (!dispose) continue
-            try {
-              await dispose()
-            } catch (error) {
-              if (!activationFailure && !hasCleanupError) {
-                cleanupError = error
-                hasCleanupError = true
-              }
+      const cleanup = () => cleanupPromise ??= (async () => {
+        let failed = false
+        let firstError: unknown
+        while (cleanups.length) {
+          try {
+            await cleanups.pop()!()
+          } catch (error) {
+            if (!failed) {
+              failed = true
+              firstError = error
             }
           }
-          if (activationFailure) throw activationFailure.error
-          if (hasCleanupError) throw cleanupError
-        })()
-
-        return await cleanupPromise
-      }
-
-      let unregister: (() => void) | undefined
+        }
+        if (failed) throw firstError
+      })()
 
       try {
-        const returnedCleanup = await activate(context, api, options, meta)
-        if (returnedCleanup) cleanups.push(returnedCleanup)
-        unregister = api.lifecycle.onDispose(() => cleanup())
+        const returnedCleanup = await activate(scope, api)
+        if (returnedCleanup) scope.onCleanup(returnedCleanup)
+        return cleanup
       } catch (error) {
         try {
-          unregister?.()
+          await cleanup()
         } catch {
-          // Preserve the original activation or registration failure.
+          // Preserve the activation error over any rollback failure.
         }
-        return await cleanup({ error })
-      }
-
-      if (api.lifecycle.signal.aborted) {
-        unregister?.()
-        await cleanup()
+        throw error
       }
     },
-  }
+  })
 }

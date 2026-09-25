@@ -1,6 +1,7 @@
-import type { Event } from "@opencode-ai/sdk/v2"
+import type { OpenCodeEvent } from "@opencode/client"
 
 import type { SubagentSnapshot, SubagentSnapshotLoader } from "./subagent-snapshot.js"
+import { createSnapshotRefreshTracker } from "./snapshot-refresh.js"
 
 export type RetainedFailures = Record<string, Record<string, number>>
 
@@ -20,17 +21,17 @@ export type SubagentSourceState =
     failureTimes: Readonly<Record<string, number>>
   }
 
-export type SubagentRefreshEvent = Extract<Event, { type:
-  | "session.created"
-  | "session.updated"
-  | "session.deleted"
-  | "session.status"
-  | "session.idle"
-  | "session.error"
-  | "message.updated"
-  | "message.removed"
-  | "tui.session.select"
-}>
+const REFRESH_EVENTS = [
+  "session.usage.updated", "session.step.ended", "session.step.failed",
+  "session.created", "session.forked", "session.deleted", "session.renamed",
+  "session.agent.selected", "session.model.selected",
+  "session.execution.started", "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
+  "session.status", "session.idle",
+  "session.revert.staged", "session.revert.cleared", "session.revert.committed",
+  "session.compaction.ended", "session.compaction.failed", "server.connected",
+] as const satisfies readonly OpenCodeEvent["type"][]
+
+export type SubagentRefreshEvent = Extract<OpenCodeEvent, { type: typeof REFRESH_EVENTS[number] }>
 
 export type SubagentEventRegistrar = <Type extends SubagentRefreshEvent["type"]>(
   type: Type,
@@ -41,7 +42,8 @@ export type SubagentSourceDependencies = {
   loadSnapshot: SubagentSnapshotLoader
   onEvent: SubagentEventRegistrar
   loadFailures(): RetainedFailures
-  saveFailures(value: RetainedFailures): void
+  // Apply only affected parent/child deltas to the latest durable state.
+  saveFailures(mutation: (failures: RetainedFailures) => void): void | Promise<void>
   now(): number
   setTimer(callback: () => void, delayMs: number): unknown
   clearTimer(timer: unknown): void
@@ -84,6 +86,7 @@ export function createSubagentSource({
   const knownDirectChildIDs = new Set<string>()
   const listeners = new Set<() => void>()
   const retryTimers = new Set<unknown>()
+  const refresh = createSnapshotRefreshTracker()
 
   function notify(): void {
     for (const listener of [...listeners]) {
@@ -134,23 +137,44 @@ export function createSubagentSource({
     for (const childID of childIDs) knownDirectChildIDs.add(childID)
   }
 
-  function persistFailures(): void {
-    saveFailures(copyFailures(retainedFailures))
+  function persistFailures(mutation: (failures: RetainedFailures) => void): void {
+    try {
+      void Promise.resolve(saveFailures(mutation)).catch(() => {
+        // A rejected durable write must not discard live failure evidence.
+      })
+    } catch {
+      // Storage failures must not turn a successful snapshot into a failed load.
+    }
+  }
+
+  function mergeFailures(): void {
+    const stored = loadFailures()[parentID]
+    if (!stored) return
+    const existing = retainedFailures[parentID] ??= {}
+    for (const [childID, time] of Object.entries(stored)) {
+      existing[childID] = Math.min(existing[childID] ?? time, time)
+    }
   }
 
   function pruneFailures(capturedParentID: string, childIDs: readonly string[]): void {
     const existing = retainedFailures[capturedParentID]
     if (!existing) return
     const childIDSet = new Set(childIDs)
-    const pruned = Object.fromEntries(
-      Object.entries(existing).filter(([childID]) => childIDSet.has(childID)),
-    )
-    if (Object.keys(pruned).length === Object.keys(existing).length) return
+    const removed = Object.keys(existing).filter((childID) => !childIDSet.has(childID))
+    if (removed.length === 0) return
 
+    const pruned = { ...existing }
+    for (const childID of removed) delete pruned[childID]
     retainedFailures = { ...retainedFailures }
     if (Object.keys(pruned).length === 0) delete retainedFailures[capturedParentID]
     else retainedFailures[capturedParentID] = pruned
-    persistFailures()
+    persistFailures((failures) => {
+      const current = failures[capturedParentID]
+      if (!current) return
+      // A concurrent write may have added a sibling since this snapshot loaded.
+      for (const childID of removed) delete current[childID]
+      if (Object.keys(current).length === 0) delete failures[capturedParentID]
+    })
   }
 
   async function attemptLoad(
@@ -163,6 +187,8 @@ export function createSubagentSource({
     try {
       const snapshot = await loadSnapshot(capturedParentID, {
         signal: controller.signal,
+        previous: currentState?.phase === "ready" || currentState?.phase === "stale" ? currentState.snapshot : undefined,
+        refresh: refresh.capture(),
         onChildIDs(childIDs) {
           if (!isCurrent(capturedParentID, capturedGeneration, controller)) return
           replaceKnownChildIDs(childIDs)
@@ -170,8 +196,10 @@ export function createSubagentSource({
       })
       if (!isCurrent(capturedParentID, capturedGeneration, controller)) return
       replaceKnownChildIDs(snapshot.childIDs)
+      mergeFailures()
       pruneFailures(capturedParentID, snapshot.childIDs)
       if (!isCurrent(capturedParentID, capturedGeneration, controller)) return
+      refresh.clear()
       currentState = {
         phase: "ready",
         parentID: capturedParentID,
@@ -181,6 +209,7 @@ export function createSubagentSource({
       notify()
     } catch {
       if (!isCurrent(capturedParentID, capturedGeneration, controller)) return
+      refresh.full()
       const retryDelay = RETRY_DELAYS_MS[attempt]
       if (retryDelay !== undefined) {
         let timer: unknown
@@ -251,22 +280,26 @@ export function createSubagentSource({
     scheduleRefresh(capturedParentID, capturedGeneration)
   }
 
-  function recordFailure(childID: string): void {
+  function recordFailure(childID: string, created: number): void {
     if (disposed || parentID === "") return
     const capturedParentID = parentID
     const capturedGeneration = invalidate()
+    mergeFailures()
     const existing = retainedFailures[capturedParentID] ?? {}
-    if (!(childID in existing)) {
-      const failureTime = now()
+    const failureTime = Number.isFinite(created) ? created : now()
+    if (!(childID in existing) || failureTime < existing[childID]) {
       if (!isCurrentGeneration(capturedParentID, capturedGeneration)) return
       retainedFailures = {
         ...retainedFailures,
         [capturedParentID]: { ...existing, [childID]: failureTime },
       }
-      persistFailures()
-      if (!isCurrentGeneration(capturedParentID, capturedGeneration)) return
-      publishFailureTimes()
+      persistFailures((failures) => {
+        const current = failures[capturedParentID] ??= {}
+        current[childID] = Math.min(current[childID] ?? failureTime, failureTime)
+      })
     }
+    if (!isCurrentGeneration(capturedParentID, capturedGeneration)) return
+    publishFailureTimes()
     scheduleRefresh(capturedParentID, capturedGeneration)
   }
 
@@ -281,63 +314,28 @@ export function createSubagentSource({
       && currentState.phase === "unavailable"
   }
 
-  const unsubscribers = [
-    onEvent("session.created", (event) => {
-      if (parentID !== "" && event.properties.info.parentID === parentID) {
-        knownDirectChildIDs.add(event.properties.info.id)
-      }
-      if (
-        event.properties.info.parentID === parentID
-        || recoverUnknownTopology(event.properties.info.id)
-      ) invalidateAndSchedule()
-    }),
-    onEvent("session.updated", (event) => {
-      if (parentID !== "" && event.properties.info.parentID === parentID) {
-        knownDirectChildIDs.add(event.properties.info.id)
-      }
-      if (
-        known(event.properties.sessionID)
-        || known(event.properties.info.id)
-        || event.properties.info.parentID === parentID
-        || recoverUnknownTopology(event.properties.sessionID)
-      ) invalidateAndSchedule()
-    }),
-    onEvent("session.deleted", (event) => {
-      if (
-        known(event.properties.sessionID)
-        || known(event.properties.info.id)
-        || recoverUnknownTopology(event.properties.sessionID)
-      ) invalidateAndSchedule()
-    }),
-    onEvent("session.status", (event) => {
-      if (known(event.properties.sessionID) || recoverUnknownTopology(event.properties.sessionID)) {
-        invalidateAndSchedule()
-      }
-    }),
-    onEvent("session.idle", (event) => {
-      if (known(event.properties.sessionID) || recoverUnknownTopology(event.properties.sessionID)) {
-        invalidateAndSchedule()
-      }
-    }),
-    onEvent("session.error", (event) => {
-      const childID = event.properties.sessionID
-      if (childID !== undefined && known(childID)) recordFailure(childID)
-      else if (recoverUnknownTopology(childID)) invalidateAndSchedule()
-    }),
-    onEvent("message.updated", (event) => {
-      if (known(event.properties.sessionID) || recoverUnknownTopology(event.properties.sessionID)) {
-        invalidateAndSchedule()
-      }
-    }),
-    onEvent("message.removed", (event) => {
-      if (known(event.properties.sessionID) || recoverUnknownTopology(event.properties.sessionID)) {
-        invalidateAndSchedule()
-      }
-    }),
-    onEvent("tui.session.select", (event) => {
-      if (event.properties.sessionID !== "") setParentID(event.properties.sessionID)
-    }),
-  ]
+  const unsubscribers = REFRESH_EVENTS.map((type) => onEvent(type, (event) => {
+    if (disposed || parentID === "") return
+    if (event.type === "server.connected") {
+      refresh.add(event)
+      invalidateAndSchedule()
+      return
+    }
+    const childID = event.data.sessionID
+    if ((event.type === "session.created" || event.type === "session.forked") && event.data.parentID === parentID) {
+      knownDirectChildIDs.add(childID)
+    }
+    if (known(childID) && (
+      event.type === "session.execution.failed" || event.type === "session.execution.interrupted"
+      || event.type === "session.step.failed" || event.type === "session.compaction.failed"
+    )) {
+      refresh.add(event)
+      recordFailure(childID, event.created)
+    } else if (childID === parentID || known(childID) || recoverUnknownTopology(childID)) {
+      refresh.add(event)
+      invalidateAndSchedule()
+    }
+  }))
 
   function setParentID(nextParentID: string): void {
     if (disposed || nextParentID === parentID) return
@@ -348,6 +346,8 @@ export function createSubagentSource({
     topologyKnown = false
     knownDirectChildIDs.clear()
     parentID = nextParentID
+    refresh.clear()
+    refresh.full()
     if (nextParentID === "") {
       currentState = undefined
       notify()

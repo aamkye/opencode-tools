@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
 import test, { after } from "node:test"
@@ -14,8 +14,9 @@ process.env.HOME = isolatedProviderHome
 process.env.XDG_CONFIG_HOME = isolatedProviderHome
 process.env.XDG_DATA_HOME = isolatedProviderHome
 
-const { createOpenAiProvider, fetchOpenAiQuota, mapOpenAiPanelState } = await import("../.tmp-test/provider-openai.mjs")
-const { createReactiveOpenAiAdapter } = await import("../.tmp-test/provider-lifecycle.mjs")
+const { createOpenAiProvider, mapOpenAiPanelState } = await import("../.tmp-test/provider-openai.mjs")
+const { fetchOpenAiQuota } = await import("../.tmp-test/quota-rpc.mjs")
+const { createReactiveOpenAiAdapter, createNativeQuotaHost } = await import("../.tmp-test/provider-lifecycle.mjs")
 
 after(async () => {
   await flushEffects()
@@ -74,14 +75,7 @@ function quotaResponse(primary = window()) {
 }
 
 function adapterApi() {
-  return {
-    state: {
-      provider: [{ id: "openai", key: "test-token" }],
-      session: { messages: () => [] },
-      part: () => [],
-    },
-    kv: { get: () => undefined, set: () => {} },
-  }
+  return createNativeQuotaHost({ openai: "test-token" }).api
 }
 
 function createTestAdapter(t, { api = adapterApi(), fetch: testFetch, clock, providerOptions } = {}) {
@@ -349,7 +343,7 @@ test("prefers reset_at over reset_after_seconds", () => {
 
 test("exposes a framework-only OpenAI adapter without layout or slot registration", () => {
   const source = readFileSync("tui/providers/openai.ts", "utf8")
-  const shared = existsSync("shared/opencode-tools-shared.ts") ? readFileSync("shared/opencode-tools-shared.ts", "utf8") : ""
+  const shared = existsSync("shared/opencode-tools-quota.ts") ? readFileSync("shared/opencode-tools-quota.ts", "utf8") : ""
   assert.doesNotMatch(source, /@opentui\/solid/)
   assert.doesNotMatch(source, /slots\.register/)
   assert.match(shared, /createOpenAiProvider/)
@@ -357,6 +351,9 @@ test("exposes a framework-only OpenAI adapter without layout or slot registratio
 })
 
 test("reports reactive OpenAI configuration from credentials", async (t) => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => quotaResponse()
+  t.after(() => { globalThis.fetch = originalFetch })
   const openai = createReactiveOpenAiAdapter(null)
   t.after(async () => {
     openai.adapter.dispose()
@@ -372,21 +369,10 @@ test("reports reactive OpenAI configuration from credentials", async (t) => {
   assert.equal(openai.adapter.configured(), false)
 })
 
-test("prefers ChatGPT OAuth file credentials over provider API keys", async (t) => {
-  const authDirectory = resolve(isolatedProviderHome, "opencode")
-  const authPath = resolve(authDirectory, "auth.json")
-  mkdirSync(authDirectory, { recursive: true })
-  writeFileSync(authPath, JSON.stringify({
-    openai: {
-      type: "oauth",
-      access: "chatgpt-oauth-token",
-      accountId: "chatgpt-account",
-    },
-  }))
-  t.after(() => rmSync(authPath, { force: true }))
-
+test("uses resolved server OAuth through the native RPC client", async (t) => {
   let authorization
   createTestAdapter(t, {
+    api: createNativeQuotaHost({ openai: "chatgpt-oauth-token" }).api,
     fetch: async (_url, options) => {
       authorization = options.headers.Authorization
       return quotaResponse()
@@ -762,4 +748,55 @@ test("aborts and clears the OpenAI request timeout immediately on dispose", asyn
   pending.requests[0].resolve(quotaResponse(window({ used_percent: 5 })))
   await flushEffects()
   assert.deepEqual(observableState(adapter), stateAtDispose)
+})
+
+test("public revisions and location changes cancel RPC work without client credentials", async (t) => {
+  const pending = deferredRequests()
+  const { adapter, host } = createReactiveTestAdapter(t, { fetch: pending.fetch })
+  await flushEffects()
+  assert.deepEqual(host.rpcCalls[0].input, { provider: "openai" })
+  host.emit("credential.updated", {}, { directory: "/unrelated", workspaceID: "wrk_other" })
+  await flushEffects()
+  assert.equal(pending.requests.length, 1)
+  host.emit("credential.updated")
+  await flushEffects()
+  assert.equal(pending.requests[0].signal.aborted, true)
+  assert.equal(pending.requests.length, 2)
+  host.setLocation({ directory: "/new-remote", workspaceID: "wrk_new" })
+  await flushEffects()
+  assert.equal(pending.requests[1].signal.aborted, true)
+  assert.deepEqual(host.rpcCalls[2].location, { directory: "/new-remote", workspaceID: "wrk_new" })
+  pending.requests[0].resolve(quotaResponse(window({ used_percent: 99 })))
+  pending.requests[1].resolve(quotaResponse(window({ used_percent: 98 })))
+  pending.requests[2].resolve(quotaResponse(window({ used_percent: 25 })))
+  await flushEffects()
+  assert.equal(adapter.home().primaryPct, 75)
+  adapter.dispose()
+  assert.equal(host.listenerCount(), 0)
+})
+
+test("a transient resolver outage preserves configured stale quota", async (t) => {
+  const host = createNativeQuotaHost({ openai: "test-token" })
+  let outage = false
+  let rpcFailure = false
+  const rpc = host.api.client.rpc.bind(host.api.client)
+  host.api.client.rpc = (contract) => {
+    const client = rpc(contract)
+    return { fetch: (input, options) => rpcFailure ? Promise.reject(new Error("RPC unavailable")) : outage
+      ? Promise.resolve({ provider: "openai", configured: false, result: { kind: "transient-failure" } })
+      : client.fetch(input, options) }
+  }
+  const adapter = createTestAdapter(t, { api: host.api, fetch: async () => quotaResponse() })
+  await adapter.refresh()
+  assert.equal(adapter.configured(), true)
+  outage = true
+  await adapter.refresh()
+  assert.equal(adapter.freshness(), "stale")
+  assert.equal(adapter.configured(), true)
+  assert.equal(item(adapter.panel(), "openai:18000s-primary").value, 75)
+  rpcFailure = true
+  await adapter.refresh()
+  assert.equal(adapter.freshness(), "stale")
+  assert.equal(adapter.configured(), true)
+  assert.equal(item(adapter.panel(), "openai:18000s-primary").value, 75)
 })

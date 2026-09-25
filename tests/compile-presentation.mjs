@@ -4,7 +4,11 @@ import tsPreset from "@babel/preset-typescript"
 import moduleResolver from "babel-plugin-module-resolver"
 import solidPreset from "babel-preset-solid"
 import { mkdirSync, readFileSync, rmSync } from "node:fs"
-import { resolve } from "node:path"
+import { basename, resolve } from "node:path"
+import { mapBuilds } from "../build-concurrency.mjs"
+
+const selected = new Set(process.argv.slice(2))
+const wanted = (outfile) => selected.size === 0 || selected.has(basename(outfile, ".mjs"))
 
 const openTuiSolidPlugin = {
   name: "opentui-solid-test-compiler",
@@ -31,22 +35,24 @@ const openTuiSolidPlugin = {
   },
 }
 
-for (const name of ["presentation-types", "presentation-format", "presentation-layout", "presentation-renderer", "presentation-mounted", "compact-panel-mounted", "compact-status-row-render", "mcp-mounted", "context-mounted", "lsp-mounted", "todo-mounted", "ses-tokens-mounted", "subagent-mounted", "provider-zai", "provider-openai", "provider-opencode-go", "provider-hub", "provider-lifecycle", "quota-composition", "quota-selection", "home-feature", "home-composition", "context-model", "mcp-model", "lsp-model", "todo-model", "ses-tokens-model", "subagent-model", "session-tree-snapshot", "subagent-snapshot", "ses-tokens-source", "subagent-source", "token-report-feature", "token-tui", "token-tui-controlled", "plugin-adapters-quota-fixture", "plugin-adapters-home-fixture", "plugin-adapters-token-fixture", "plugin-adapters-mcp-fixture", "plugin-adapters-subagent-fixture", "plugin-runtime"]) {
-  rmSync(`.tmp-test/${name}.mjs`, { force: true })
+for (const name of ["presentation-types", "presentation-format", "presentation-layout", "presentation-renderer", "presentation-mounted", "compact-panel-mounted", "compact-status-row-render", "mcp-mounted", "context-mounted", "ses-tokens-mounted", "subagent-mounted", "provider-zai", "provider-openai", "provider-opencode-go", "provider-hub", "provider-lifecycle", "quota-composition", "quota-selection", "home-feature", "home-composition", "context-model", "mcp-model", "ses-tokens-model", "subagent-model", "session-source", "session-tree-snapshot", "subagent-snapshot", "ses-tokens-source", "subagent-source", "plugin-adapters-quota-fixture", "plugin-adapters-home-fixture", "plugin-adapters-mcp-fixture", "plugin-adapters-subagent-fixture", "plugin-runtime"]) {
+  const outfile = `.tmp-test/${name}.mjs`
+  if (!wanted(outfile)) continue
+  rmSync(outfile, { force: true })
 }
 mkdirSync(".tmp-test", { recursive: true })
 
-for (const [entryPoint, outfile, conditions, plugins, external] of [
+const fixtures = [
+  ["tests/renderer-clock.fixture.tsx", ".tmp-test/renderer-clock.mjs", ["browser"], [openTuiSolidPlugin]],
+  ["tests/quota-rpc.fixture.ts", ".tmp-test/quota-rpc.mjs"],
   ["tui/presentation/types.ts", ".tmp-test/presentation-types.mjs"],
   ["tui/presentation/format.ts", ".tmp-test/presentation-format.mjs"],
   ["tui/presentation/layout.ts", ".tmp-test/presentation-layout.mjs"],
   ["tui/presentation/renderer.tsx", ".tmp-test/presentation-renderer.mjs"],
   ["tests/presentation-mounted.fixture.ts", ".tmp-test/presentation-mounted.mjs"],
   ["tests/compact-panel-mounted.fixture.ts", ".tmp-test/compact-panel-mounted.mjs"],
-  ["tests/mcp-mounted.fixture.ts", ".tmp-test/mcp-mounted.mjs", ["browser"]],
-  ["tests/context-mounted.fixture.ts", ".tmp-test/context-mounted.mjs", ["browser"]],
-  ["tests/lsp-mounted.fixture.ts", ".tmp-test/lsp-mounted.mjs", ["browser"]],
-  ["tests/todo-mounted.fixture.ts", ".tmp-test/todo-mounted.mjs", ["browser"]],
+  ["tests/mcp-mounted.fixture.ts", ".tmp-test/mcp-mounted.mjs", ["browser"], [openTuiSolidPlugin], ["@opentui/core"]],
+  ["tests/context-mounted.fixture.ts", ".tmp-test/context-mounted.mjs", ["browser"], [openTuiSolidPlugin], ["@opentui/core"]],
   [
     "tests/ses-tokens-mounted.fixture.ts",
     ".tmp-test/ses-tokens-mounted.mjs",
@@ -67,33 +73,20 @@ for (const [entryPoint, outfile, conditions, plugins, external] of [
   ["tui/features/quota.ts", ".tmp-test/quota-composition.mjs", ["browser"]],
   ["tests/quota-selection.fixture.ts", ".tmp-test/quota-selection.mjs", ["browser"]],
   ["tui/features/home.ts", ".tmp-test/home-feature.mjs", ["browser"]],
-  ["tui/home.tsx", ".tmp-test/home-composition.mjs", ["browser"]],
+  ["tests/quota-mounted.fixture.ts", ".tmp-test/home-composition.mjs", ["browser"], [openTuiSolidPlugin], ["@opentui/core"]],
   ["tui/features/context.ts", ".tmp-test/context-model.mjs", ["browser"]],
   ["tui/features/mcp.ts", ".tmp-test/mcp-model.mjs", ["browser"]],
-  ["tui/features/lsp.ts", ".tmp-test/lsp-model.mjs", ["browser"]],
-  ["tui/features/todo.ts", ".tmp-test/todo-model.mjs", ["browser"]],
   ["tui/features/ses-tokens.ts", ".tmp-test/ses-tokens-model.mjs", ["browser"]],
   ["tui/features/subagent.ts", ".tmp-test/subagent-model.mjs", ["browser"]],
+  ["lib/session-source.ts", ".tmp-test/session-source.mjs"],
   ["tui/services/session-tree-snapshot.ts", ".tmp-test/session-tree-snapshot.mjs", ["browser"]],
   ["tui/services/subagent-snapshot.ts", ".tmp-test/subagent-snapshot.mjs", ["browser"]],
   ["tui/services/ses-tokens-source.ts", ".tmp-test/ses-tokens-source.mjs", ["browser"]],
   ["tui/services/subagent-source.ts", ".tmp-test/subagent-source.mjs", ["browser"]],
-  ["tui/features/token-report.ts", ".tmp-test/token-report-feature.mjs", ["browser"]],
-  ["tui/token-report.tsx", ".tmp-test/token-tui.mjs", ["browser"], undefined, ["solid-js"]],
-  ["tui/token-report.tsx", ".tmp-test/token-tui-controlled.mjs", ["browser"], [{
-    name: "token-tui-controlled-compute",
-    setup(build) {
-      build.onResolve({ filter: /token-report-data\.js$/ }, () => ({ path: resolve("tests/token-tui-dependencies.fixture.ts") }))
-    },
-  }], ["solid-js"]],
-  ["tui/quota.tsx", ".tmp-test/plugin-adapters-quota-fixture.mjs", ["browser"]],
-  ["tui/home.tsx", ".tmp-test/plugin-adapters-home-fixture.mjs", ["browser"]],
-  ["tui/token-report.tsx", ".tmp-test/plugin-adapters-token-fixture.mjs", ["browser"], undefined, ["solid-js"]],
-  ["tui/mcp.tsx", ".tmp-test/plugin-adapters-mcp-fixture.mjs", ["browser"]],
-  ["tui/subagent.tsx", ".tmp-test/plugin-adapters-subagent-fixture.mjs", ["browser"], [openTuiSolidPlugin]],
   ["tui/runtime/plugin.ts", ".tmp-test/plugin-runtime.mjs"],
   ["tui/features/collapse-options.ts", ".tmp-test/collapse-options.mjs"],
-]) {
+]
+await mapBuilds(fixtures.filter(([, outfile]) => wanted(outfile)), async ([entryPoint, outfile, conditions, plugins, external]) => {
   await build({
     bundle: true,
     entryPoints: [entryPoint],
@@ -103,18 +96,21 @@ for (const [entryPoint, outfile, conditions, plugins, external] of [
     target: "es2022",
     conditions,
     plugins,
-    external: ["bun:sqlite", "better-sqlite3", "node:sqlite", ...(external ?? [])],
+    external,
+  })
+})
+
+const compactStatusOutfile = ".tmp-test/compact-status-row-render.mjs"
+if (wanted(compactStatusOutfile)) {
+  await build({
+    bundle: true,
+    entryPoints: ["tests/compact-status-row-render.fixture.tsx"],
+    external: ["@opentui/*", "solid-js"],
+    format: "esm",
+    jsx: "automatic",
+    jsxImportSource: "@opentui/solid",
+    outfile: compactStatusOutfile,
+    platform: "node",
+    target: "es2022",
   })
 }
-
-await build({
-  bundle: true,
-  entryPoints: ["tests/compact-status-row-render.fixture.tsx"],
-  external: ["@opentui/*", "solid-js"],
-  format: "esm",
-  jsx: "automatic",
-  jsxImportSource: "@opentui/solid",
-  outfile: ".tmp-test/compact-status-row-render.mjs",
-  platform: "node",
-  target: "es2022",
-})

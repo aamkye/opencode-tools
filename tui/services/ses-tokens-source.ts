@@ -1,6 +1,7 @@
-import type { Event } from "@opencode-ai/sdk/v2"
+import type { OpenCodeEvent } from "@opencode/client"
 
 import type { SessionTreeSnapshot, SessionTreeSnapshotLoader } from "./session-tree-snapshot.js"
+import { createSnapshotRefreshTracker } from "./snapshot-refresh.js"
 
 export type SesTokensSourceState =
   | { phase: "loading"; sessionID: string }
@@ -8,14 +9,17 @@ export type SesTokensSourceState =
   | { phase: "ready"; sessionID: string; snapshot: SessionTreeSnapshot }
   | { phase: "stale"; sessionID: string; snapshot: SessionTreeSnapshot }
 
-export type SesTokensRefreshEvent = Extract<Event, { type:
-  | "message.updated"
-  | "message.removed"
-  | "session.created"
-  | "session.updated"
-  | "session.deleted"
-  | "tui.session.select"
-}>
+const REFRESH_EVENTS = [
+  "session.usage.updated", "session.step.ended", "session.step.failed",
+  "session.created", "session.forked", "session.deleted", "session.renamed",
+  "session.agent.selected", "session.model.selected",
+  "session.execution.started", "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
+  "session.status", "session.idle",
+  "session.revert.staged", "session.revert.cleared", "session.revert.committed",
+  "session.compaction.ended", "session.compaction.failed", "server.connected",
+] as const satisfies readonly OpenCodeEvent["type"][]
+
+export type SesTokensRefreshEvent = Extract<OpenCodeEvent, { type: typeof REFRESH_EVENTS[number] }>
 
 export type SesTokensEventRegistrar = <Type extends SesTokensRefreshEvent["type"]>(
   type: Type,
@@ -54,6 +58,7 @@ export function createSesTokensSource({
   const knownSessionIDs = new Set<string>()
   const listeners = new Set<() => void>()
   const retryTimers = new Set<unknown>()
+  const refresh = createSnapshotRefreshTracker()
 
   function notify(): void {
     for (const listener of listeners) {
@@ -100,6 +105,8 @@ export function createSesTokensSource({
     try {
       const snapshot = await loadSnapshot(capturedSessionID, {
         signal: controller.signal,
+        previous: currentState?.phase === "ready" || currentState?.phase === "stale" ? currentState.snapshot : undefined,
+        refresh: refresh.capture(),
         onSessionIDs(sessionIDs) {
           if (!isCurrent(capturedSessionID, capturedGeneration, controller)) return
           knownSessionIDs.clear()
@@ -107,12 +114,14 @@ export function createSesTokensSource({
         },
       })
       if (!isCurrent(capturedSessionID, capturedGeneration, controller)) return
+      refresh.clear()
       knownSessionIDs.clear()
       for (const id of snapshot.sessionIDs) knownSessionIDs.add(id)
       currentState = { phase: "ready", sessionID: capturedSessionID, snapshot }
       notify()
     } catch {
       if (!isCurrent(capturedSessionID, capturedGeneration, controller)) return
+      refresh.full()
       const retryDelay = RETRY_DELAYS_MS[attempt]
       if (retryDelay !== undefined) {
         let timer: unknown
@@ -149,8 +158,13 @@ export function createSesTokensSource({
 
   function scheduleRefresh(): void {
     if (disposed || sessionID === "") return
+    loadController?.abort()
+    generation += 1
+    clearRetryTimers()
+    const capturedGeneration = generation
     if (debounceTimer !== undefined) clearTimer(debounceTimer)
     debounceTimer = setTimer(() => {
+      if (generation !== capturedGeneration) return
       debounceTimer = undefined
       if (disposed || sessionID === "") return
       startRefresh()
@@ -161,36 +175,22 @@ export function createSesTokensSource({
     return ids.some((id) => id !== undefined && knownSessionIDs.has(id))
   }
 
-  const unsubscribers = [
-    onEvent("message.updated", (event) => {
-      if (hasKnownSessionID(event.properties.sessionID)) scheduleRefresh()
-    }),
-    onEvent("message.removed", (event) => {
-      if (hasKnownSessionID(event.properties.sessionID)) scheduleRefresh()
-    }),
-    onEvent("session.created", (event) => {
-      if (hasKnownSessionID(
-        event.properties.info.id,
-        event.properties.sessionID,
-        event.properties.info.parentID,
-      )) scheduleRefresh()
-    }),
-    onEvent("session.updated", (event) => {
-      if (hasKnownSessionID(
-        event.properties.info.id,
-        event.properties.sessionID,
-        event.properties.info.parentID,
-      )) scheduleRefresh()
-    }),
-    onEvent("session.deleted", (event) => {
-      if (hasKnownSessionID(event.properties.info.id, event.properties.sessionID)) scheduleRefresh()
-    }),
-    onEvent("tui.session.select", (event) => {
-      if (event.properties.sessionID !== "" && event.properties.sessionID !== sessionID) {
-        setSessionID(event.properties.sessionID)
-      }
-    }),
-  ]
+  const unsubscribers = REFRESH_EVENTS.map((type) => onEvent(type, (event) => {
+    if (disposed || sessionID === "") return
+    if (event.type === "server.connected") {
+      refresh.add(event)
+      scheduleRefresh()
+      return
+    }
+    const parentID = event.type === "session.created" || event.type === "session.forked"
+      ? event.data.parentID : undefined
+    if (hasKnownSessionID(event.data.sessionID, parentID)) {
+      refresh.add(event)
+      // Creation is proof of membership, including descendants created during debounce.
+      if (parentID && knownSessionIDs.has(parentID)) knownSessionIDs.add(event.data.sessionID)
+      scheduleRefresh()
+    }
+  }))
 
   function setSessionID(nextSessionID: string): void {
     if (disposed || nextSessionID === sessionID) return
@@ -199,6 +199,8 @@ export function createSesTokensSource({
     generation += 1
     clearTimers()
     sessionID = nextSessionID
+    refresh.clear()
+    refresh.full()
     knownSessionIDs.clear()
     if (nextSessionID === "") {
       currentState = undefined
@@ -228,7 +230,13 @@ export function createSesTokensSource({
       loadController = undefined
       generation += 1
       clearTimers()
-      for (const unsubscribe of unsubscribers) unsubscribe()
+      for (const unsubscribe of unsubscribers) {
+        try {
+          unsubscribe()
+        } catch {
+          // Attempt every unsubscribe even if one event source fails.
+        }
+      }
       listeners.clear()
     },
   }

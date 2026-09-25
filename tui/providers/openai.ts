@@ -1,66 +1,15 @@
-import { existsSync, readFileSync } from "node:fs"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, createRoot, createSignal } from "solid-js"
 
 import type { PanelItem, PanelModel, PanelTextSegment } from "../presentation/types.js"
 import type { HomeQuotaSummary, ProviderFreshness, QuotaProviderAdapter, QuotaProviderOptions } from "./types.js"
 import { EXHAUSTED_POLL_MS, clampPct, safeNumber } from "./_shared.js"
 import { createQuotaPollingEngine } from "./quota-engine.js"
-import type { QuotaEngineFetchResult } from "./quota-engine.js"
+import type { OpenAiQuotaData, RateLimitWindow } from "../../lib/quota/openai.js"
+import { createQuotaTransport } from "../services/quota-client.js"
 
-const CREDENTIAL_FILE_PATHS = [
-  `${process.env.XDG_DATA_HOME || `${process.env.HOME || ""}/.local/share`}/opencode/auth.json`,
-  `${process.env.XDG_CONFIG_HOME || `${process.env.HOME || ""}/.config`}/opencode/auth.json`,
-  `${process.env.XDG_CONFIG_HOME || `${process.env.HOME || ""}/.config`}/opencode/account.json`,
-  `${process.env.XDG_DATA_HOME || `${process.env.HOME || ""}/.local/share`}/opencode/account.json`,
-]
-const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
-const USER_AGENT = "OpenCode-Quota-Toast/1.0"
-const AUTH_SOURCE_KEYS = ["openai", "codex", "chatgpt", "opencode"] as const
+export type { OpenAiQuotaData, RateLimitWindow } from "../../lib/quota/openai.js"
 const PROVIDER_ORDER = 120
-
-export type RateLimitWindow = {
-  used_percent: number
-  limit_window_seconds: number
-  reset_after_seconds: number
-  reset_at?: number
-}
-
-type RateLimitGroup = {
-  allowed?: boolean
-  limit_reached?: boolean
-  primary_window: RateLimitWindow
-  secondary_window?: RateLimitWindow | null
-}
-
-type UsageResponse = {
-  plan_type?: string
-  rate_limit?: RateLimitGroup | null
-  code_review_rate_limit?: { primary_window?: RateLimitWindow | null } | null
-  credits?: {
-    has_credits?: boolean
-    unlimited?: boolean
-    balance?: string | null
-  } | null
-}
-
-export type OpenAiQuotaData = {
-  planType: string
-  primary: RateLimitWindow
-  secondary: RateLimitWindow | null
-  codeReview: RateLimitWindow | null
-  limitReached: boolean
-  creditsBalance: string | null
-  creditsUnlimited: boolean
-}
-
-export type OpenAiAuthEntry = {
-  type?: string
-  access?: string
-  expires?: number
-  refresh?: string
-  accountId?: string
-}
 
 export type OpenAiPanelPhase = "loading" | "unavailable" | "ready" | "stale"
 
@@ -79,104 +28,6 @@ function resetEpochMs(window: RateLimitWindow, now: number): number {
 
 export function openAiRemainingPct(window: RateLimitWindow): number {
   return clampPct(100 - safeNumber(window.used_percent, 0))
-}
-
-function derivePlanLabel(planType: string | undefined): string {
-  const raw = (planType || "").toLowerCase()
-  if (raw.includes("pro") && !raw.includes("lite")) return "Pro"
-  if (raw.includes("plus")) return "Plus"
-  if (raw.includes("lite")) return "Pro Lite"
-  if (planType) return planType.charAt(0).toUpperCase() + planType.slice(1)
-  return "OpenAI"
-}
-
-export function findOpenAiAuthFromFiles(): OpenAiAuthEntry | null {
-  for (const filePath of CREDENTIAL_FILE_PATHS) {
-    try {
-      if (!existsSync(filePath)) continue
-      const data = JSON.parse(readFileSync(filePath, "utf-8"))
-      for (const key of AUTH_SOURCE_KEYS) {
-        const entry = data?.[key]
-        if (entry && typeof entry === "object" && entry.access) return entry as OpenAiAuthEntry
-      }
-    } catch (error) {
-      console.error("[quota-openai] Failed to read credential file:", error)
-    }
-  }
-  return null
-}
-
-export function findOpenAiAuthFromProviders(providers: TuiPluginApi["state"]["provider"]): OpenAiAuthEntry | null {
-  for (const key of AUTH_SOURCE_KEYS) {
-    const provider = providers.find((candidate) => candidate.id === key)
-    if (provider?.key) return { access: provider.key, type: "oauth" }
-  }
-  return null
-}
-
-function decodeJwtAccountId(token: string): string | null {
-  try {
-    const payload = token.split(".")[1]
-    if (!payload) return null
-    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/")
-    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4)
-    const data = JSON.parse(Buffer.from(padded, "base64").toString("utf-8"))
-    return data?.["https://api.openai.com/auth"]?.chatgpt_account_id ?? null
-  } catch {
-    return null
-  }
-}
-
-export async function fetchOpenAiQuota(
-  auth: OpenAiAuthEntry,
-  signal?: AbortSignal,
-): Promise<QuotaEngineFetchResult<OpenAiQuotaData>> {
-  const accessToken = auth.access
-  if (!accessToken) return { kind: "authentication-required" }
-  if (auth.expires && auth.expires < Date.now()) {
-    console.error("[quota-openai] Token expired")
-    return { kind: "authentication-required" }
-  }
-
-  const ownedController = signal ? null : new AbortController()
-  const requestSignal = signal ?? ownedController!.signal
-  try {
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${accessToken}`,
-      "User-Agent": USER_AGENT,
-    }
-    const accountId = auth.accountId || decodeJwtAccountId(accessToken)
-    if (accountId) headers["ChatGPT-Account-Id"] = accountId
-
-    const response = await fetch(OPENAI_USAGE_URL, { headers, signal: requestSignal })
-    if (!response.ok) {
-      console.error(`[quota-openai] API returned ${response.status}`)
-      return { kind: "transient-failure" }
-    }
-    const data = await response.json() as UsageResponse
-    const primary = data.rate_limit?.primary_window
-    if (!primary) {
-      console.error("[quota-openai] No primary rate limit window")
-      return { kind: "invalid-response" }
-    }
-    return {
-      kind: "success",
-      data: {
-        planType: derivePlanLabel(data.plan_type),
-        primary,
-        secondary: data.rate_limit?.secondary_window ?? null,
-        codeReview: data.code_review_rate_limit?.primary_window ?? null,
-        limitReached: Boolean(data.rate_limit?.limit_reached),
-        creditsBalance: data.credits?.balance ?? null,
-        creditsUnlimited: Boolean(data.credits?.unlimited),
-      },
-    }
-  } catch (error) {
-    if (!requestSignal.aborted) console.error("[quota-openai] fetchQuota error:", error)
-    return { kind: "transient-failure" }
-  } finally {
-    if (ownedController) ownedController.abort()
-  }
 }
 
 export function openAiHomeQuotaSummary(data: OpenAiQuotaData): HomeQuotaSummary {
@@ -274,7 +125,7 @@ function freshnessFor(phase: OpenAiPanelPhase): ProviderFreshness {
   return phase
 }
 
-export function createOpenAiProvider(api: TuiPluginApi, options: QuotaProviderOptions = {}): QuotaProviderAdapter {
+export function createOpenAiProvider(api: Plugin.Context, options: QuotaProviderOptions = {}): QuotaProviderAdapter {
   return createRoot((dispose) => {
     type PublishedQuota = { data: OpenAiQuotaData; generation: number }
 
@@ -284,13 +135,16 @@ export function createOpenAiProvider(api: TuiPluginApi, options: QuotaProviderOp
     const [lastSuccessAt, setLastSuccessAt] = createSignal(0)
     const [now, setNow] = createSignal(Date.now())
 
-    const engine = createQuotaPollingEngine<OpenAiQuotaData, OpenAiAuthEntry, OpenAiPanelPhase>({
+    const transport = createQuotaTransport(api, { provider: "openai" })
+    const engine = createQuotaPollingEngine<OpenAiQuotaData, string, OpenAiPanelPhase>({
       providerId: "openai",
       refreshIntervalMs: options.refreshIntervalMs,
       exhaustedPollMs: EXHAUSTED_POLL_MS,
-      resolveCredential: () => findOpenAiAuthFromFiles() ?? findOpenAiAuthFromProviders(api.state.provider),
-      credentialFingerprint: (auth) => `${auth.access}\u0000${auth.accountId ?? ""}`,
-      fetch: fetchOpenAiQuota,
+      resolveCredential: transport.identity,
+      fetch: async (identity, signal) => {
+        const response = await transport.fetch(identity, signal)
+        return response.provider === "openai" ? response.result : { kind: "invalid-response" }
+      },
       quotaState,
       lastSuccessAt,
       initialPhase: "loading",
@@ -298,7 +152,11 @@ export function createOpenAiProvider(api: TuiPluginApi, options: QuotaProviderOp
       onCredentialMissing: () => "unavailable",
       onFetchSuccess: () => { setPhase("ready") },
       onFetchTransientFailure: () => "unavailable",
-      onFetchAuthRequired: () => "unavailable",
+      onFetchAuthRequired: (h) => {
+        setQuotaState(null)
+        h.clearScheduledRefresh()
+        return "unavailable"
+      },
       onFetchInvalidResponse: () => "unavailable",
       onStaleHorizon: (h) => {
         setQuotaState(null)
@@ -330,11 +188,11 @@ export function createOpenAiProvider(api: TuiPluginApi, options: QuotaProviderOp
     return {
       id: "openai",
       order: PROVIDER_ORDER,
-      panel: () => mapOpenAiPanelState({ phase: phase(), data: quotaData(), authenticated: Boolean(engine.credential()?.access), now: now() }),
+      panel: () => mapOpenAiPanelState({ phase: phase(), data: quotaData(), authenticated: transport.configured(), now: now() }),
       // The legacy home slot removes unavailable and stale OpenAI data rather than showing cached usage.
       home: () => phase() === "ready" && quotaData() ? openAiHomeQuotaSummary(quotaData()!) : null,
       quotaSummary: () => quotaData() ? openAiHomeQuotaSummary(quotaData()!) : null,
-      configured: () => Boolean(engine.credential()?.access),
+      configured: transport.configured,
       freshness: () => freshnessFor(phase()),
       refresh: engine.refresh,
       setSessionID(sessionID: string): void {

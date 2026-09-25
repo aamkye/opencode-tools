@@ -31,7 +31,6 @@ function runPluginRuntimeContractCheck() {
       "--types",
       "node",
       "--skipLibCheck",
-      "opencode-plugin-tui.d.ts",
       "tests/plugin-runtime-contract.fixture.ts",
     ],
     { cwd: rootDir, encoding: "utf8" },
@@ -46,46 +45,6 @@ const descriptor = {
   source: "tui/test-runtime.ts",
 }
 
-function createLifecycle({ aborted = false, registerThrows = false } = {}) {
-  const controller = new AbortController()
-  const callbacks = []
-  let unregisterCount = 0
-
-  if (aborted) controller.abort()
-
-  return {
-    api: {
-      lifecycle: {
-        signal: controller.signal,
-        onDispose(fn) {
-          if (registerThrows) {
-            throw new Error("registration failed")
-          }
-          callbacks.push(fn)
-          let active = true
-          return () => {
-            unregisterCount += 1
-            if (!active) return
-            active = false
-            const index = callbacks.indexOf(fn)
-            if (index >= 0) callbacks.splice(index, 1)
-          }
-        },
-      },
-    },
-    count() {
-      return callbacks.length
-    },
-    unregisterCount() {
-      return unregisterCount
-    },
-    async dispose() {
-      controller.abort()
-      for (const callback of [...callbacks]) await callback()
-    },
-  }
-}
-
 async function rejectionOf(operation) {
   try {
     await operation()
@@ -95,32 +54,38 @@ async function rejectionOf(operation) {
   }
 }
 
-test("defineTuiPlugin exposes the descriptor id and disposes cleanups in LIFO order once", async () => {
-  const lifecycle = createLifecycle()
-  const events = []
-  const module = defineTuiPlugin(descriptor, async (context) => {
-    context.onCleanup(() => events.push("first"))
-    context.onCleanup(() => events.push("second"))
-    return () => events.push("returned")
+test("native setup returns one idempotent LIFO disposer", async () => {
+  const calls = []
+  const plugin = defineTuiPlugin(descriptor, (scope) => {
+    scope.onCleanup(() => { calls.push("first") })
+    scope.onCleanup(() => { calls.push("second") })
   })
-
-  await module.tui(lifecycle.api, undefined, undefined)
-
-  assert.equal(module.id, descriptor.id)
+  const dispose = await plugin.setup({ renderer: {}, options: {} })
+  assert.equal(plugin.id, descriptor.id)
   assert.match(descriptor.id, /^aamkye\/opencode-tools-[^/]+$/)
-  assert.equal(typeof module.tui, "function")
-  assert.equal(lifecycle.count(), 1)
+  await dispose()
+  await dispose()
+  assert.deepEqual(calls, ["second", "first"])
+})
 
-  await lifecycle.dispose()
-  await lifecycle.dispose()
-
-  assert.deepEqual(events, ["returned", "second", "first"])
+test("native setup passes the original context with options to activation", async () => {
+  const api = { renderer: {}, options: { enabled: true } }
+  let received
+  const plugin = defineTuiPlugin(descriptor, (...args) => { received = args })
+  const dispose = await plugin.setup(api)
+  assert.equal(received.length, 2)
+  assert.equal(received[1], api)
+  assert.deepEqual(received[1].options, { enabled: true })
+  await dispose()
 })
 
 test("defineTuiPlugin rolls back registered cleanups and rethrows the activation error", async () => {
-  const lifecycle = createLifecycle()
   const events = []
   const module = defineTuiPlugin(descriptor, async (context) => {
+    context.onCleanup(async () => {
+      await Promise.resolve()
+      events.push("async cleanup")
+    })
     context.onCleanup(() => {
       events.push("cleanup")
       throw new Error("cleanup failed")
@@ -128,14 +93,14 @@ test("defineTuiPlugin rolls back registered cleanups and rethrows the activation
     throw new Error("activation failed")
   })
 
-  await assert.rejects(module.tui(lifecycle.api, undefined, undefined), /activation failed/)
-  assert.deepEqual(events, ["cleanup"])
-  assert.equal(lifecycle.count(), 0)
+  await assert.rejects(module.setup({ renderer: {}, options: {} }), /activation failed/)
+  assert.deepEqual(events, ["cleanup", "async cleanup"])
 })
 
-test("defineTuiPlugin drains async cleanups when host registration fails", async () => {
-  const lifecycle = createLifecycle({ registerThrows: true })
+test("native disposer awaits returned and registered async cleanups once under concurrent calls", async () => {
   const events = []
+  let finishReturned
+  const returnedGate = new Promise((resolve) => { finishReturned = resolve })
   const module = defineTuiPlugin(descriptor, async (context) => {
     context.onCleanup(async () => {
       events.push("registered:start")
@@ -144,14 +109,19 @@ test("defineTuiPlugin drains async cleanups when host registration fails", async
     })
     return async () => {
       events.push("returned:start")
-      await Promise.resolve()
+      await returnedGate
       events.push("returned:end")
     }
   })
 
-  await assert.rejects(module.tui(lifecycle.api, undefined, undefined), /registration failed/)
-  assert.equal(lifecycle.count(), 0)
-  assert.equal(lifecycle.unregisterCount(), 0)
+  const dispose = await module.setup({ renderer: {}, options: {} })
+  const first = dispose()
+  const second = dispose()
+  assert.equal(first, second)
+  assert.deepEqual(events, ["returned:start"])
+  finishReturned()
+  await Promise.all([first, second])
+  await dispose()
   assert.deepEqual(events, [
     "returned:start",
     "returned:end",
@@ -161,7 +131,6 @@ test("defineTuiPlugin drains async cleanups when host registration fails", async
 })
 
 test("defineTuiPlugin drains every cleanup and throws the first cleanup failure", async () => {
-  const lifecycle = createLifecycle()
   const events = []
   const module = defineTuiPlugin(descriptor, async (context) => {
     context.onCleanup(() => {
@@ -174,29 +143,14 @@ test("defineTuiPlugin drains every cleanup and throws the first cleanup failure"
     })
   })
 
-  await module.tui(lifecycle.api, undefined, undefined)
+  const dispose = await module.setup({ renderer: {}, options: {} })
 
-  await assert.rejects(lifecycle.dispose(), /second cleanup failed/)
+  await assert.rejects(dispose(), /second cleanup failed/)
+  await assert.rejects(dispose(), /second cleanup failed/)
   assert.deepEqual(events, ["second", "first"])
 })
 
-test("defineTuiPlugin unregisters and cleans immediately when the host lifecycle is already aborted", async () => {
-  const lifecycle = createLifecycle({ aborted: true })
-  const events = []
-  const module = defineTuiPlugin(descriptor, async (context) => {
-    context.onCleanup(() => events.push("registered"))
-    return () => events.push("returned")
-  })
-
-  await module.tui(lifecycle.api, undefined, undefined)
-
-  assert.equal(lifecycle.count(), 0)
-  assert.equal(lifecycle.unregisterCount(), 1)
-  assert.deepEqual(events, ["returned", "registered"])
-})
-
 test("defineTuiPlugin preserves undefined thrown by activation over cleanup failures", async () => {
-  const lifecycle = createLifecycle()
   let cleanupCount = 0
   const module = defineTuiPlugin(descriptor, async (context) => {
     context.onCleanup(() => {
@@ -207,34 +161,13 @@ test("defineTuiPlugin preserves undefined thrown by activation over cleanup fail
   })
 
   assert.deepEqual(
-    await rejectionOf(() => module.tui(lifecycle.api, undefined, undefined)),
+    await rejectionOf(() => module.setup({ renderer: {}, options: {} })),
     { rejected: true, error: undefined },
   )
   assert.equal(cleanupCount, 1)
 })
 
-test("defineTuiPlugin preserves undefined thrown by host registration over cleanup failures", async () => {
-  const lifecycle = createLifecycle()
-  lifecycle.api.lifecycle.onDispose = () => {
-    throw undefined
-  }
-  let cleanupCount = 0
-  const module = defineTuiPlugin(descriptor, async (context) => {
-    context.onCleanup(() => {
-      cleanupCount += 1
-      throw new Error("cleanup failed")
-    })
-  })
-
-  assert.deepEqual(
-    await rejectionOf(() => module.tui(lifecycle.api, undefined, undefined)),
-    { rejected: true, error: undefined },
-  )
-  assert.equal(cleanupCount, 1)
-})
-
-test("defineTuiPlugin preserves undefined thrown by immediate cleanup and unregisters once", async () => {
-  const lifecycle = createLifecycle({ aborted: true })
+test("native disposer preserves undefined as the first cleanup failure", async () => {
   const events = []
   const module = defineTuiPlugin(descriptor, async (context) => {
     context.onCleanup(() => {
@@ -247,22 +180,25 @@ test("defineTuiPlugin preserves undefined thrown by immediate cleanup and unregi
     })
   })
 
+  const dispose = await module.setup({ renderer: {}, options: {} })
   assert.deepEqual(
-    await rejectionOf(() => module.tui(lifecycle.api, undefined, undefined)),
+    await rejectionOf(dispose),
     { rejected: true, error: undefined },
   )
-  assert.equal(lifecycle.unregisterCount(), 1)
+  assert.deepEqual(await rejectionOf(dispose), { rejected: true, error: undefined })
   assert.deepEqual(events, ["first undefined", "later error"])
 })
 
-test("shared ServiceFactory contract exposes disposal for object services", () => {
+test("runtime contracts use the published native definition, context and cleanup types", () => {
   const result = runPluginRuntimeContractCheck()
   assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"))
 })
 
-test("acquireService shares leases per api and disposes on final release", async () => {
-  const apiA = createLifecycle().api
-  const apiB = createLifecycle().api
+test("acquireService shares different contexts on one renderer and disposes on final release", async () => {
+  const renderer = {}
+  const apiA = { renderer, options: {} }
+  const apiB = { renderer, options: {} }
+  const apiC = { renderer: {}, options: {} }
   const key = Symbol("shared-service")
   let creations = 0
   let disposals = 0
@@ -275,11 +211,11 @@ test("acquireService shares leases per api and disposes on final release", async
   })
 
   const first = acquireService(apiA, key, factory)
-  const second = acquireService(apiA, key, factory)
-  const otherApi = acquireService(apiB, key, factory)
+  const second = acquireService(apiB, key, factory)
+  const otherRenderer = acquireService(apiC, key, factory)
 
   assert.equal(first.value, second.value)
-  assert.notEqual(first.value, otherApi.value)
+  assert.notEqual(first.value, otherRenderer.value)
   assert.equal(creations, 2)
 
   await first.release()
@@ -292,12 +228,12 @@ test("acquireService shares leases per api and disposes on final release", async
   await second.release()
   assert.equal(disposals, 1)
 
-  await otherApi.release()
+  await otherRenderer.release()
   assert.equal(disposals, 2)
 })
 
 test("acquireService retries failed factory calls and replaces services during reentrant disposal", async () => {
-  const api = createLifecycle().api
+  const api = { renderer: {}, options: {} }
   const retryKey = Symbol("retry-service")
   const reentrantKey = Symbol("reentrant-service")
   let retryAttempts = 0
@@ -343,7 +279,6 @@ test("acquireService retries failed factory calls and replaces services during r
 })
 
 test("defineTuiPlugin activation context releases acquired service leases on cleanup", async () => {
-  const lifecycle = createLifecycle()
   const key = Symbol("context-service")
   let creations = 0
   let disposals = 0
@@ -367,18 +302,42 @@ test("defineTuiPlugin activation context releases acquired service leases on cle
     secondLeaseValue = second.value
   })
 
-  await module.tui(lifecycle.api, undefined, undefined)
+  const dispose = await module.setup({ renderer: {}, options: {} })
 
   assert.equal(creations, 1)
   assert.equal(firstLeaseValue, secondLeaseValue)
   assert.equal(disposals, 0)
 
-  await lifecycle.dispose()
+  await dispose()
+  assert.equal(disposals, 1)
+})
+
+test("activation rollback releases its lease without disposing another plugin's shared service", async () => {
+  const renderer = {}
+  const key = Symbol("shared-rollback")
+  let creations = 0
+  let disposals = 0
+  const factory = () => ({
+    id: ++creations,
+    dispose() { disposals += 1 },
+  })
+  const active = defineTuiPlugin(descriptor, (scope) => {
+    scope.acquireService(key, factory)
+  })
+  const failed = defineTuiPlugin(descriptor, (scope) => {
+    scope.acquireService(key, factory)
+    throw new Error("activation failed")
+  })
+
+  const dispose = await active.setup({ renderer, options: {} })
+  await assert.rejects(failed.setup({ renderer, options: {} }), /activation failed/)
+  assert.equal(creations, 1)
+  assert.equal(disposals, 0)
+  await dispose()
   assert.equal(disposals, 1)
 })
 
 test("defineTuiPlugin activation context replaces reentrant services during cleanup", async () => {
-  const lifecycle = createLifecycle()
   const key = Symbol("context-reentrant-service")
   let creations = 0
   let disposals = 0
@@ -400,8 +359,8 @@ test("defineTuiPlugin activation context replaces reentrant services during clea
     firstValue = context.acquireService(key, factory).value
   })
 
-  await module.tui(lifecycle.api, undefined, undefined)
-  await lifecycle.dispose()
+  const dispose = await module.setup({ renderer: {}, options: {} })
+  await dispose()
 
   assert.equal(creations, 2)
   assert.equal(disposals, 2)

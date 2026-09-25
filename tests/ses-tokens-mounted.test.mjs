@@ -15,39 +15,39 @@ const {
 } = await import("../.tmp-test/ses-tokens-mounted.mjs")
 
 const eventTypes = [
-  "message.updated",
-  "message.removed",
-  "session.created",
-  "session.updated",
-  "session.deleted",
-  "tui.session.select",
+  "session.usage.updated", "session.step.ended", "session.step.failed",
+  "session.created", "session.forked", "session.deleted", "session.renamed",
+  "session.agent.selected", "session.model.selected",
+  "session.execution.started", "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
+  "session.status", "session.idle",
+  "session.revert.staged", "session.revert.cleared", "session.revert.committed",
+  "session.compaction.ended", "session.compaction.failed", "server.connected",
 ]
 
 async function resolveReady(mounted, sessionID = "session-a", messages = readyMessages) {
   await mounted.resolveList({ data: [{ id: sessionID }] })
-  await mounted.resolveMessages(sessionID, { data: messages.map((info) => ({ info })) })
+  await mounted.resolveMessages(sessionID, { data: messages })
 }
 
-async function exhaustFailedLoad(mounted) {
-  await mounted.resolveList({})
+async function exhaustFailedLoad(mounted, dirtySessionID) {
+  if (dirtySessionID) await mounted.resolveMessages(dirtySessionID, {})
+  else await mounted.resolveList({})
   for (const delay of [2_000, 4_000, 8_000]) {
     await mounted.runTimer(delay)
     await mounted.resolveList({ error: new Error("offline") })
   }
 }
 
-test("registers SesTokens at slot 110 and one session-scoped sidebar slot", async () => {
+test("registers native sidebar and chip slots with session-scoped requests", async () => {
   const mounted = await mountSesTokensPanel()
   try {
-    assert.equal(mounted.pluginID, "aamkye/opencode-tools-ses-tokens")
-    assert.equal(mounted.registrations.length, 1)
-    assert.equal(mounted.registrations[0].order, 110)
-    assert.deepEqual(Object.keys(mounted.registrations[0].slots), ["sidebar_content", "session_prompt_right"])
+    assert.equal(mounted.pluginID, "aamkye.opencode-tools-ses-tokens")
+    assert.deepEqual(mounted.registrations.map((claim) => claim.append), ["sidebar.content", "prompt.footer.status"])
     assert.deepEqual(mounted.listCalls, [])
     assert.equal(await mounted.setSessionID(), null)
     assert.deepEqual(mounted.listCalls, [])
     await mounted.setSessionID("session-a")
-    assert.deepEqual(mounted.listCalls, [{ directory: "/repo" }])
+    assert.deepEqual(mounted.listCalls, [{ limit: 100, order: "asc" }])
   } finally {
     await mounted.dispose()
   }
@@ -83,8 +83,8 @@ test("renders the exact expanded row order symbols values and semantic total sep
     })
     assert.equal(view.dividerCount, 2, "only the CompactPanel header and footer borders remain")
     assert.ok(view.totalSeparator.segments.every(({ text }) => text.trimEnd() === text))
-    assert.deepEqual(mounted.listCalls, [{ directory: "/repo" }])
-    assert.deepEqual(mounted.messageCalls, [{ sessionID: "session-a", directory: "/repo" }])
+    assert.deepEqual(mounted.listCalls, [{ limit: 100, order: "asc" }])
+    assert.deepEqual(mounted.messageCalls, [{ sessionID: "session-a", limit: 100, order: "asc" }])
   } finally {
     await mounted.dispose()
   }
@@ -112,9 +112,9 @@ test("renders stale detail in expanded and collapsed option-A headers", async ()
   const mounted = await mountSesTokensPanel({ sessionID: "session-a" })
   try {
     await resolveReady(mounted)
-    mounted.emit({ type: "message.updated", properties: { sessionID: "session-a" } })
+    mounted.emit({ type: "session.usage.updated", data: { sessionID: "session-a" } })
     await mounted.runTimer(200)
-    await exhaustFailedLoad(mounted)
+    await exhaustFailedLoad(mounted, "session-a")
 
     assert.equal(mounted.view().detailText, "stale")
     assert.equal(mounted.view().detailColor, "#ffaa00")
@@ -128,6 +128,22 @@ test("renders stale detail in expanded and collapsed option-A headers", async ()
   } finally {
     await mounted.dispose()
   }
+})
+
+test("preserves user disclosure through usage refreshes", async () => {
+  const mounted = await mountSesTokensPanel({ sessionID: "session-a" })
+  try {
+    await resolveReady(mounted)
+    for (const marker of ["▶ ", "▼ "]) {
+      await mounted.view().clickHeader()
+      mounted.emit({ type: "session.usage.updated", data: { sessionID: "session-a" } })
+      await mounted.runTimer(200)
+      await mounted.resolveMessages("session-a", { data: readyMessages })
+      assert.equal(mounted.view().marker, marker)
+      if (marker === "▶ ") assert.equal(mounted.view().summaryText, "29.2M")
+      else assert.equal(mounted.view().rows.at(-1).value, "29.2M")
+    }
+  } finally { await mounted.dispose() }
 })
 
 test("renders muted loading and unavailable states without zero metrics", async () => {
@@ -225,8 +241,10 @@ test("switches slot sessions without remounting or leaking prior metrics", async
     assert.equal(mounted.panelMounts(), 1)
     assert.equal(mounted.panelDisposals(), 0)
     assert.equal(mounted.slotRenders(), 1)
-    assert.equal(mounted.sourceFactoryCalls(), 1)
-    for (const type of eventTypes) assert.equal(mounted.registrationCount(type), 1)
+    for (const type of eventTypes) {
+      assert.equal(mounted.registrationCount(type), 2)
+      assert.equal(mounted.unsubscribeCount(type), 1)
+    }
     const listCallCount = mounted.listCalls.length
     const messageCallCount = mounted.messageCalls.length
     await mounted.setSessionID()
@@ -239,7 +257,7 @@ test("switches slot sessions without remounting or leaking prior metrics", async
   }
 })
 
-test("rejects defined falsy client errors", async () => {
+test("retries rejected native client requests including falsy reasons", async () => {
   const listFailure = await mountSesTokensPanel({ sessionID: "session-a" })
   try {
     await listFailure.resolveList({ data: [{ id: "session-a" }], error: false })
@@ -264,15 +282,71 @@ test("registers refresh events and removes subscriptions and timers on disposal"
   const mounted = await mountSesTokensPanel({ sessionID: "session-a" })
   assert.deepEqual(mounted.registeredTypes(), eventTypes)
   await resolveReady(mounted)
-  mounted.emit({ type: "message.updated", properties: { sessionID: "session-a" } })
+  mounted.emit({ type: "session.usage.updated", data: { sessionID: "session-a" } })
   assert.deepEqual(mounted.pendingDelays(), [200])
-  assert.equal(mounted.lifecycleAborted(), false)
-  assert.ok(mounted.lifecycleCleanups() >= 1)
+  assert.equal(mounted.signals.every((signal) => signal.aborted), false)
 
   await mounted.dispose()
   assert.deepEqual(mounted.registeredTypes(), [])
   assert.deepEqual(mounted.pendingDelays(), [])
-  assert.equal(mounted.lifecycleAborted(), true)
-  assert.equal(mounted.lifecycleCleanups(), 0)
+  assert.deepEqual(mounted.disposedSlots, ["prompt.footer.status", "sidebar.content"])
   for (const type of eventTypes) assert.equal(mounted.unsubscribeCount(type), 1)
+})
+
+test("keeps mounted tabs independent and loads a chip without a sidebar", async () => {
+  const mounted = await mountSesTokensPanel({ sessionID: "a", slot: "prompt.footer.status" })
+  let extra
+  try {
+    await resolveReady(mounted, "a", oneMessage("a", 10))
+    assert.match(mounted.chipText(), /Tok.*10/)
+    extra = mounted.mountView("b")
+    await resolveReady(mounted, "b", oneMessage("b", 20))
+    assert.equal(extra.view().rows.at(-1).value, "20")
+    assert.match(mounted.chipText(), /Tok.*10/)
+    await extra.view().clickHeader()
+    await mounted.setSessionID("c")
+    await resolveReady(mounted, "c", oneMessage("c", 30))
+    assert.equal(extra.view().marker, "▶ ")
+    assert.equal(extra.view().summaryText, "20")
+    assert.match(mounted.chipText(), /Tok.*30/)
+    mounted.unmount()
+    assert.equal(mounted.unsubscribeCount("session.usage.updated"), 2)
+    await mounted.unload()
+    assert.deepEqual(mounted.registeredTypes(), [])
+    assert.equal(mounted.unsubscribeCount("session.usage.updated"), 3)
+  } finally { extra?.dispose(); await mounted.dispose() }
+})
+
+test("complete cross-worktree pagination deduplicates records and accounts for deep descendants", async () => {
+  const mounted = await mountSesTokensPanel({ sessionID: "root" })
+  try {
+    const child = { id: "child", parentID: "root", location: { directory: "/worktree" } }
+    await mounted.resolveList({ data: [child], cursor: { next: "page-2" } })
+    assert.equal(mounted.messageCalls.length, 0)
+    await mounted.resolveList({ data: [child, { id: "grandchild", parentID: "child" }] })
+    await mounted.resolveMessages("root", { data: oneMessage("root", 1), cursor: { next: "messages-2" } })
+    await mounted.resolveMessages("root", { data: [...oneMessage("root", 2), { ...oneMessage("root", 3)[0], id: "second" }] })
+    await mounted.resolveMessages("child", { data: oneMessage("child", 5) })
+    await mounted.resolveMessages("grandchild", { data: oneMessage("grandchild", 7) })
+    assert.equal(mounted.view().rows[0].value, "4")
+    assert.equal(mounted.view().rows.at(-1).value, "17")
+    assert.deepEqual(mounted.listCalls, [{ limit: 100, order: "asc" }, { limit: 100, cursor: "page-2" }])
+  } finally { await mounted.dispose() }
+})
+
+test("mounted sources share four request slots and unmount cancels queued work", async () => {
+  const mounted = await mountSesTokensPanel({ sessionID: "a" })
+  let extra
+  try {
+    await mounted.resolveList({ data: Array.from({ length: 6 }, (_, i) => ({ id: `a-${i}`, parentID: "a" })) })
+    extra = mounted.mountView("b")
+    await mounted.resolveList({ data: [{ id: "b-child", parentID: "b" }] })
+    assert.equal(mounted.messageCalls.length, 4)
+    extra.dispose()
+    mounted.unmount()
+    assert.ok(mounted.signals.every((signal) => signal.aborted))
+    for (const id of ["a", "a-0", "a-1", "a-2"]) await mounted.resolveMessages(id, { data: [] })
+    assert.equal(mounted.messageCalls.length, 4)
+    assert.deepEqual(mounted.registeredTypes(), [])
+  } finally { extra?.dispose(); await mounted.dispose() }
 })

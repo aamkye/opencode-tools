@@ -3,7 +3,6 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
 import test, { after } from "node:test"
-import { build } from "esbuild"
 
 const originalProviderEnvironment = {
   HOME: process.env.HOME,
@@ -15,50 +14,9 @@ process.env.HOME = isolatedProviderHome
 process.env.XDG_CONFIG_HOME = isolatedProviderHome
 process.env.XDG_DATA_HOME = isolatedProviderHome
 
-const { createZaiProvider, fetchZaiQuota, mapZaiPanelState } = await import("../.tmp-test/provider-zai.mjs")
-const { createReactiveZaiAdapter } = await import("../.tmp-test/provider-lifecycle.mjs")
-const retryFixtureBuild = await build({
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  target: "es2022",
-  conditions: ["browser"],
-  external: ["bun:sqlite", "better-sqlite3", "node:sqlite"],
-  write: false,
-  stdin: {
-    loader: "ts",
-    resolveDir: resolve(import.meta.dirname, ".."),
-    sourcefile: "provider-zai-retry-lifecycle.fixture.ts",
-    contents: `
-      import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-      import { createSignal } from "solid-js"
-      import { createZaiProvider } from "./tui/providers/zai.js"
-
-      export function createReactiveZaiRetryAdapter(initialKey: string, retryText: string) {
-        const [providers, setProviders] = createSignal([{ id: "zai-coding-plan", key: initialKey }])
-        const api = {
-          state: {
-            get provider() {
-              return providers()
-            },
-            session: { messages: () => [{ id: "retry-message" }] },
-            part: () => [{ type: "text", text: retryText }],
-          },
-          kv: { get: () => undefined, set: () => undefined },
-        } as unknown as TuiPluginApi
-
-        return {
-          adapter: createZaiProvider(api),
-          setCredential(key: string) {
-            setProviders([{ id: "zai-coding-plan", key }])
-          },
-        }
-      }
-    `,
-  },
-})
-const retryFixtureUrl = `data:text/javascript;base64,${Buffer.from(retryFixtureBuild.outputFiles[0].contents).toString("base64")}`
-const { createReactiveZaiRetryAdapter } = await import(retryFixtureUrl)
+const { createZaiProvider, mapZaiPanelState } = await import("../.tmp-test/provider-zai.mjs")
+const { fetchZaiQuota } = await import("../.tmp-test/quota-rpc.mjs")
+const { createReactiveZaiAdapter, createReactiveZaiRetryAdapter, createNativeQuotaHost } = await import("../.tmp-test/provider-lifecycle.mjs")
 
 after(async () => {
   await flushEffects()
@@ -122,15 +80,7 @@ function quotaResponse(nextResetTime = now + 60 * 60 * 1000, percentage = 25) {
 }
 
 function adapterApi(overrides = {}) {
-  return {
-    state: {
-      provider: [{ id: "zai-coding-plan", key: "test-key" }],
-      session: { messages: () => [] },
-      part: () => [],
-    },
-    kv: { get: () => undefined, set: () => {} },
-    ...overrides,
-  }
+  return { ...createNativeQuotaHost({ zai: "test-key" }).api, ...overrides }
 }
 
 function createTestAdapter(t, { api = adapterApi(), fetch: testFetch, clock, providerOptions } = {}) {
@@ -323,6 +273,9 @@ test("maps loading and unavailable Z.AI states without hiding the provider", () 
 })
 
 test("reports reactive Z.AI configuration from credentials", async (t) => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => quotaResponse()
+  t.after(() => { globalThis.fetch = originalFetch })
   const zai = createReactiveZaiAdapter(null)
   t.after(async () => {
     zai.adapter.dispose()
@@ -407,7 +360,7 @@ test("composes stale Off-Peak and stale header segments exactly", () => {
 
 test("exposes a framework-only provider adapter and semantic home summary", () => {
   const source = readFileSync("tui/providers/zai.ts", "utf8")
-  const shared = existsSync("shared/opencode-tools-shared.ts") ? readFileSync("shared/opencode-tools-shared.ts", "utf8") : ""
+  const shared = existsSync("shared/opencode-tools-quota.ts") ? readFileSync("shared/opencode-tools-quota.ts", "utf8") : ""
   assert.doesNotMatch(source, /@opentui\/solid/)
   assert.doesNotMatch(source, /slots\.register/)
   assert.match(shared, /createZaiProvider/)
@@ -415,14 +368,7 @@ test("exposes a framework-only provider adapter and semantic home summary", () =
 })
 
 test("refreshes selected Z.AI quota when constructed outside a component owner", async (t) => {
-  const api = {
-    state: {
-      provider: [{ id: "zai-coding-plan", key: "test-key" }],
-      session: { messages: () => [] },
-      part: () => [],
-    },
-    kv: { get: () => undefined, set: () => {} },
-  }
+  const api = adapterApi()
 
   const adapter = createTestAdapter(t, {
     api,
@@ -455,6 +401,111 @@ test("exposes reactive provider freshness alongside the compact Z.AI home summar
   await adapter.refresh()
   assert.equal(adapter.freshness(), "stale")
   assert.equal(adapter.home(), null)
+})
+
+for (const [failure, invalidResponse] of [
+  ["malformed JSON", () => new Response("{", { headers: { "content-type": "application/json" } })],
+  ["invalid payload", () => Response.json({})],
+  ["unsuccessful envelope", () => Response.json({ code: 500 })],
+]) {
+  test(`retains cached Z.AI quota after ${failure} until the stale horizon`, async (t) => {
+    const clock = installFakeClock(now)
+    let malformed = false
+    const adapter = createTestAdapter(t, {
+      clock,
+      fetch: async () => malformed ? invalidResponse() : quotaResponse(),
+    })
+    await adapter.refresh()
+    assert.equal(adapter.freshness(), "ready")
+    assert.equal(item(adapter.panel(), "zai:5h").value, 75)
+
+    clock.advance(60_000)
+    malformed = true
+    await adapter.refresh()
+    assert.equal(adapter.freshness(), "stale")
+    assert.equal(item(adapter.panel(), "zai:5h").value, 75)
+    assert.equal(item(adapter.panel(), "zai:5h-reset").epoch, now + 3_600_000)
+    assert.deepEqual(item(adapter.panel(), "zai:header").detailSegments, [
+      { text: "Peak (3x)", status: "error" },
+      { text: " / ", status: "textMuted" },
+      { text: "stale", status: "warning" },
+    ])
+    assert.equal(adapter.quotaSummary().primaryPct, 75)
+    assert.equal(adapter.configured(), true)
+    assert.equal(adapter.home(), null)
+
+    const tick = clock.intervals.find((timer) => timer.active && timer.delay === 1_000)
+    assert.ok(tick)
+    clock.advance(9 * 60_000)
+    tick.callback()
+    await adapter.refresh()
+    assert.equal(adapter.freshness(), "stale")
+    assert.equal(item(adapter.panel(), "zai:5h").value, 75)
+
+    clock.advance(1)
+    tick.callback()
+    await adapter.refresh()
+    assert.equal(adapter.freshness(), "unavailable")
+    assert.equal(item(adapter.panel(), "zai:5h"), undefined)
+    assert.equal(item(adapter.panel(), "zai:header").title, "Z.AI (est)")
+    assert.equal(adapter.quotaSummary(), null)
+    assert.ok(clock.timeouts.every((timer) => !timer.active))
+
+    malformed = false
+    await adapter.refresh()
+    assert.equal(adapter.freshness(), "ready")
+    assert.equal(item(adapter.panel(), "zai:5h").value, 75)
+  })
+}
+
+for (const retryText of [null, "Rate limited; reset after 15m"]) {
+  test(`malformed Z.AI responses without cached quota retain the ${retryText ? "rate-limit" : "estimated-reset"} fallback`, async (t) => {
+    const clock = installFakeClock(now)
+    const host = createNativeQuotaHost({ zai: "test-key", messages: retryText ? [{
+      type: "assistant", id: "retry", time: { created: 0 }, agent: "build",
+      model: { providerID: "zai", id: "glm" }, content: [{ type: "text", text: retryText }],
+    }] : [] })
+    const adapter = createTestAdapter(t, { api: host.api, clock, fetch: async () => Response.json({}) })
+    adapter.setSessionID("session-1")
+    await adapter.refresh()
+
+    assert.equal(adapter.freshness(), "unavailable")
+    assert.equal(adapter.quotaSummary(), null)
+    assert.equal(adapter.home(), null)
+    if (retryText) {
+      assert.equal(item(adapter.panel(), "zai:header").detail, "Rate limited")
+      assert.equal(item(adapter.panel(), "zai:5h").value, 0)
+      assert.equal(item(adapter.panel(), "zai:5h-reset").epoch, now + 15 * 60_000)
+    } else {
+      assert.equal(item(adapter.panel(), "zai:header").title, "Z.AI (est)")
+      assert.equal(item(adapter.panel(), "zai:5h"), undefined)
+      assert.equal(item(adapter.panel(), "zai:5h-reset").label, "Estimated reset")
+    }
+  })
+}
+
+test("authentication errors clear Z.AI cached quota after a malformed response", async (t) => {
+  const clock = installFakeClock(now)
+  let response = () => quotaResponse()
+  const adapter = createTestAdapter(t, { clock, fetch: async () => response() })
+  await adapter.refresh()
+  response = () => Response.json({})
+  await adapter.refresh()
+  assert.equal(adapter.freshness(), "stale")
+
+  response = () => new Response(null, { status: 403 })
+  await adapter.refresh()
+  assert.equal(adapter.freshness(), "unavailable")
+  assert.equal(item(adapter.panel(), "zai:5h"), undefined)
+  assert.equal(item(adapter.panel(), "zai:header").detail, "No Z.AI account linked")
+  assert.equal(adapter.quotaSummary(), null)
+  assert.ok(clock.timeouts.every((timer) => !timer.active))
+
+  response = () => Response.json({})
+  await adapter.refresh()
+  assert.equal(adapter.freshness(), "unavailable")
+  assert.equal(adapter.quotaSummary(), null)
+  assert.equal(item(adapter.panel(), "zai:5h"), undefined)
 })
 
 test("uses the default and custom provider polling intervals while keeping the one-second clock", async (t) => {
@@ -548,13 +599,13 @@ test("suppresses expected Z.AI abort logs but diagnoses non-abort failures", asy
   const controller = new AbortController()
   const aborted = fetchZaiQuota("key", controller.signal)
   controller.abort()
-  assert.equal(await aborted, null)
+  assert.deepEqual(await aborted, { kind: "transient-failure" })
   assert.equal(errors.length, 0)
 
   globalThis.fetch = async () => {
     throw new Error("transport failed")
   }
-  assert.equal(await fetchZaiQuota("key", new AbortController().signal), null)
+  assert.deepEqual(await fetchZaiQuota("key", new AbortController().signal), { kind: "transient-failure" })
   assert.equal(errors.length, 1)
   assert.equal(errors[0][0], "[quota-zai] fetchQuota error:")
 })
@@ -579,7 +630,7 @@ test("owns and clears a 20-second timeout when fetchZaiQuota receives no signal"
 
   clock.advance(20_000)
   timeout.callback()
-  assert.equal(await request, null)
+  assert.deepEqual(await request, { kind: "transient-failure" })
   assert.equal(requestSignal.aborted, true)
   assert.equal(timeout.active, false)
 })
@@ -853,22 +904,37 @@ test("expires stale quota data after the stale window", async (t) => {
 
 test("uses a reset timestamp from session messages when quota data is unavailable", async (t) => {
   const clock = installFakeClock(now)
-  const stored = []
+  const host = createNativeQuotaHost({ zai: "test-key", messages: [{
+    type: "assistant", id: "message-1", time: { created: 0 }, agent: "build",
+    model: { providerID: "zai-coding-plan", id: "glm" },
+    content: [{ type: "text", text: "Your limit will reset at 2026-07-13 20:00:00" }],
+  }] })
   const adapter = createTestAdapter(t, {
     clock,
     fetch: async () => ({ ok: false }),
-    api: adapterApi({
-      state: {
-        provider: [{ id: "zai-coding-plan", key: "test-key" }],
-        session: { messages: () => [{ id: "message-1" }] },
-        part: () => [{ type: "text", text: "Your limit will reset at 2026-07-13 20:00:00" }],
-      },
-      kv: { get: () => undefined, set: (key, value) => stored.push([key, value]) },
-    }),
+    api: host.api,
   })
   await adapter.refresh()
   adapter.setSessionID("session-1")
 
-  assert.deepEqual(stored, [["quota_zai_baseline_sgt", "2026-07-13 20:00:00"]])
+  assert.deepEqual(host.stored, [{ baselineSgt: "2026-07-13 20:00:00", cycleMs: 18000000 }])
   assert.equal(item(adapter.panel(), "zai:5h-reset").epoch, Date.UTC(2026, 6, 13, 12, 0, 0))
+})
+
+test("Z.AI baseline persistence mutates the current native draft without overwriting another instance's cycle", async (t) => {
+  const clock = installFakeClock(now)
+  const host = createNativeQuotaHost({ zai: "test-key", messages: [{
+    type: "assistant", id: "reset", time: { created: 0 }, agent: "build",
+    model: { providerID: "zai", id: "glm" },
+    content: [{ type: "text", text: "Your limit will reset at 2026-07-13 20:00:00" }],
+  }] })
+  let mutate
+  const current = { baselineSgt: "2026-05-28 00:45:44", cycleMs: 18000000 }
+  host.api.storage.store = () => [current, async (mutation) => { mutate = mutation }]
+  const adapter = createTestAdapter(t, { api: host.api, clock, fetch: async () => ({ ok: false }) })
+  await adapter.refresh()
+  adapter.setSessionID("session-1")
+  current.cycleMs = 7200000
+  mutate(current)
+  assert.deepEqual(current, { baselineSgt: "2026-07-13 20:00:00", cycleMs: 7200000 })
 })

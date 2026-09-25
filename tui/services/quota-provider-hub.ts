@@ -1,4 +1,4 @@
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { Plugin } from "@opencode/plugin/tui"
 
 import { createOpenAiProvider } from "../providers/openai.js"
 import type { OpenCodeGoConfig, OpenCodeGoProviderOptions } from "../providers/opencode-go.js"
@@ -7,7 +7,6 @@ import type { QuotaProviderAdapter, QuotaProviderOptions } from "../providers/ty
 import { createZaiProvider } from "../providers/zai.js"
 import type { ServiceLease, TuiFeatureContext } from "../runtime/plugin.js"
 
-const QUOTA_PROVIDER_HUB_SERVICE_KEY = "quota-provider-hub"
 const DEFAULT_PROVIDER_REFRESH_INTERVAL_MS = 10_000
 const DEFAULT_ZAI_HIDE_TOOLS = false
 
@@ -31,23 +30,25 @@ export interface QuotaProviderHub {
 }
 
 type ProviderFactorySet = {
-  createZaiProvider(api: TuiPluginApi, options?: QuotaProviderOptions): QuotaProviderAdapter
-  createOpenAiProvider(api: TuiPluginApi, options?: QuotaProviderOptions): QuotaProviderAdapter
-  createOpenCodeGoProvider(api: TuiPluginApi, options?: OpenCodeGoProviderOptions): QuotaProviderAdapter
+  createZaiProvider(api: Plugin.Context, options?: QuotaProviderOptions): QuotaProviderAdapter
+  createOpenAiProvider(api: Plugin.Context, options?: QuotaProviderOptions): QuotaProviderAdapter
+  createOpenCodeGoProvider(api: Plugin.Context, options: OpenCodeGoProviderOptions): QuotaProviderAdapter
 }
 
 type ProviderSpec = {
   id: QuotaProviderAdapter["id"]
   key: string
+  config?: OpenCodeGoConfig
   create(): QuotaProviderAdapter
 }
 
 type ProviderRecord = {
   key: string
+  config?: OpenCodeGoConfig
   adapter: QuotaProviderAdapter
 }
 
-type QuotaProviderHubContext = TuiFeatureContext & { api: TuiPluginApi }
+type QuotaProviderHubContext = TuiFeatureContext & { api: Plugin.Context }
 
 function normalizeRefreshInterval(value: number | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined
@@ -102,12 +103,11 @@ function openCodeGoKey(options: OpenCodeGoProviderOptions): string {
   return JSON.stringify([
     effectiveRefreshInterval(options.refreshIntervalMs),
     config.workspaceId,
-    config.workspaceToken,
   ])
 }
 
 function providerSpecs(
-  api: TuiPluginApi,
+  api: Plugin.Context,
   factories: ProviderFactorySet,
   demands: readonly QuotaProviderDemand[],
 ): ProviderSpec[] {
@@ -132,6 +132,7 @@ function providerSpecs(
         ? [{
             id: "opencode-go",
             key: openCodeGoKey(openCodeGo),
+            config: openCodeGo.config!,
             create: () => factories.createOpenCodeGoProvider(api, openCodeGo),
           } satisfies ProviderSpec]
         : []),
@@ -154,7 +155,7 @@ function providerSpecs(
 }
 
 export function createQuotaProviderHub(
-  api: TuiPluginApi,
+  api: Plugin.Context,
   factories: ProviderFactorySet = { createZaiProvider, createOpenAiProvider, createOpenCodeGoProvider },
 ): QuotaProviderHub {
   const demands = new Map<number, QuotaProviderDemand>()
@@ -182,14 +183,14 @@ export function createQuotaProviderHub(
     try {
       for (const spec of providerSpecs(api, factories, [...demands.values()])) {
         const current = records.get(spec.id)
-        if (current && current.key === spec.key) {
+        if (current && current.key === spec.key && current.config?.workspaceToken === spec.config?.workspaceToken) {
           nextRecords.set(spec.id, current)
           nextProviders.push(current.adapter)
           continue
         }
         const adapter = spec.create()
         createdAdapters.push(adapter)
-        nextRecords.set(spec.id, { key: spec.key, adapter })
+        nextRecords.set(spec.id, { key: spec.key, config: spec.config, adapter })
         nextProviders.push(adapter)
       }
     } catch (error) {
@@ -266,7 +267,9 @@ export function acquireQuotaProviderHub(
   context: QuotaProviderHubContext,
   demand: QuotaProviderDemand,
 ): ServiceLease<QuotaProviderHub> {
-  const lease = context.acquireService(QUOTA_PROVIDER_HUB_SERVICE_KEY, () => createQuotaProviderHub(context.api))
+  const location = context.api.location ?? context.api.data.location.default()
+  const hubKey = `quota-provider-hub:${JSON.stringify([location.directory, location.workspaceID ?? ""])}`
+  const lease = context.acquireService(hubKey, () => createQuotaProviderHub(context.api))
   const removeDemand = lease.value.addDemand(demand)
   context.onCleanup(removeDemand)
   return lease

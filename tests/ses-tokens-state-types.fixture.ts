@@ -1,54 +1,34 @@
-import type { Message, Session } from "@opencode-ai/sdk/v2"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { OpenCodeEvent, SessionInfo, SessionMessageInfo } from "@opencode/client"
+import type { Plugin } from "@opencode/plugin/tui"
+import type { SlotMap } from "@opencode/plugin/tui/context"
+
+import { createSessionSource } from "../lib/session-source.js"
+import type { SesTokensEventRegistrar } from "../tui/services/ses-tokens-source.js"
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
   (<Value>() => Value extends Right ? 1 : 2) ? true : false
 type Expect<Value extends true> = Value
-type IsAny<Value> = 0 extends (1 & Value) ? true : false
 
-type SidebarCallback = Parameters<TuiPluginApi["slots"]["register"]>[0]["slots"][string]
-type SidebarProps = Parameters<SidebarCallback>[1]
+export type NativeSidebarProps = Expect<Equal<SlotMap["sidebar.content"], { readonly sessionID: string }>>
 
-export type SidebarPropsAreNotAny = Expect<Equal<IsAny<SidebarProps>, false>>
-export type SidebarPropsAreExactlyOptionalSessionID = Expect<Equal<
-  SidebarProps,
-  { session_id?: string }
->>
-
-export async function inspectSesTokensApi(api: TuiPluginApi, sessionID: string) {
-  const directory: string = api.state.path.directory
-  const sessions = await api.client.session.list({ directory })
-  const messages = await api.client.session.messages({ sessionID, directory })
-  const sessionsDataIsExact: Expect<Equal<
-    typeof sessions.data,
-    readonly Session[] | undefined
-  >> = true
-  const messagesDataIsExact: Expect<Equal<
-    typeof messages.data,
-    readonly { info: Message }[] | undefined
-  >> = true
-  void sessionsDataIsExact
-  void messagesDataIsExact
-  const unregister = [
-    api.event.on("message.updated", (event) => event.properties.info.role),
-    api.event.on("message.removed", (event) => event.properties.sessionID),
-    api.event.on("session.created", (event) => event.properties.info.parentID),
-    api.event.on("session.updated", (event) => event.properties.info.id),
-    api.event.on("session.deleted", (event) => event.properties.sessionID),
-    api.event.on("tui.session.select", (event) => event.properties.sessionID),
-  ]
-  api.slots.register({
-    slots: {
-      sidebar_content(_ctx, props) {
-        return props.session_id ? null : null
-      },
-    },
-  })
-  return {
-    directory,
-    sessions: sessions.data,
-    messages: messages.data,
-    unregister,
+export async function inspectSesTokensApi(api: Plugin.Context, sessionID: string, signal: AbortSignal) {
+  const source = createSessionSource(api.client)
+  const sessions: SessionInfo[] = await source.listSessions({}, signal)
+  const messages: SessionMessageInfo[] = await source.listMessages(sessionID, signal)
+  const onEvent: SesTokensEventRegistrar = api.data.on
+  const usage: Extract<OpenCodeEvent, { type: "session.usage.updated" }> = {
+    id: "event", created: 0, type: "session.usage.updated",
+    data: { sessionID, cost: 0, tokens: { input: 1, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
   }
+  const unregister = [
+    onEvent("session.usage.updated", (event) => event.data.tokens),
+    onEvent("session.created", (event) => event.data.parentID),
+    onEvent("session.forked", (event) => event.data.parentID),
+    onEvent("session.step.ended", (event) => event.data.sessionID),
+    onEvent("server.connected", () => {}),
+    api.ui.slot({ append: "sidebar.content", render: (props) => props.sessionID ? null : null }),
+    api.ui.slot({ append: "prompt.footer.status", render: (props) => props.sessionID ? null : null }),
+  ]
+  return { sessions, messages, unregister, usage }
 }

@@ -4,15 +4,13 @@ import test from "node:test"
 import { createSubagentSource } from "../.tmp-test/subagent-source.mjs"
 
 const EVENT_TYPES = [
-  "session.created",
-  "session.updated",
-  "session.deleted",
-  "session.status",
-  "session.idle",
-  "session.error",
-  "message.updated",
-  "message.removed",
-  "tui.session.select",
+  "session.usage.updated", "session.step.ended", "session.step.failed",
+  "session.created", "session.forked", "session.deleted", "session.renamed",
+  "session.agent.selected", "session.model.selected",
+  "session.execution.started", "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
+  "session.status", "session.idle",
+  "session.revert.staged", "session.revert.cleared", "session.revert.committed",
+  "session.compaction.ended", "session.compaction.failed", "server.connected",
 ]
 
 function deferred() {
@@ -31,7 +29,7 @@ function snapshot(parentID, ...childIDs) {
     childIDs,
     children: childIDs.map((id, index) => ({
       session: { id, parentID, title: id, time: { created: index + 1, updated: index + 1 } },
-      status: { type: "idle" },
+      status: "idle",
       messages: [],
     })),
   }
@@ -83,7 +81,7 @@ function cloneFailures(value) {
   ]))
 }
 
-function createHarness(loadSnapshot, { failures = {}, now = () => 1_000 } = {}) {
+function createHarness(loadSnapshot, { failures = {}, now = () => 1_000, saveFailures } = {}) {
   const handlers = new Map()
   const registeredHandlers = new Map()
   const registrations = []
@@ -109,8 +107,11 @@ function createHarness(loadSnapshot, { failures = {}, now = () => 1_000 } = {}) 
     loadFailures() {
       return storedFailures
     },
-    saveFailures(value) {
-      saves.push(value)
+    saveFailures(mutation) {
+      saves.push(mutation)
+      if (saveFailures) return saveFailures(mutation)
+      const value = cloneFailures(storedFailures)
+      mutation(value)
       storedFailures = value
     },
     now,
@@ -135,35 +136,92 @@ function createHarness(loadSnapshot, { failures = {}, now = () => 1_000 } = {}) 
 }
 
 function created(id, parentID) {
-  return { type: "session.created", properties: { sessionID: id, info: { id, parentID } } }
+  return { type: "session.created", data: { sessionID: id, parentID } }
 }
 
-function updated(id, parentID) {
-  return { type: "session.updated", properties: { sessionID: id, info: { id, parentID } } }
+test("native failures retain evidence even when durable storage rejects", async () => {
+  const { source, scheduler, emit } = createHarness(async () => snapshot("parent", "child"), {
+    saveFailures: async () => { throw new Error("disk unavailable") },
+  })
+  source.setParentID("parent")
+  await settle()
+  emit({ type: "session.execution.failed", created: 123, data: { sessionID: "child", error: { type: "unknown", message: "failed" } } })
+  assert.deepEqual(source.state().failureTimes, { child: 123 })
+  await settle()
+  scheduler.run(200)
+  await settle()
+  assert.equal(source.state().phase, "ready")
+  assert.deepEqual(source.state().failureTimes, { child: 123 })
+  source.dispose()
+})
+
+test("coalesces metadata and history invalidation and fully reloads after a failed attempt", async () => {
+  const contexts = []
+  const complete = snapshot("parent", "a", "b")
+  const { source, scheduler, emit } = createHarness(async (_id, context) => {
+    contexts.push(context)
+    if (contexts.length === 3) throw new Error("offline")
+    return complete
+  })
+  source.setParentID("parent")
+  await settle()
+  emit({ type: "session.renamed", data: { sessionID: "a" } })
+  emit({ type: "session.usage.updated", data: { sessionID: "b" } })
+  scheduler.run(200)
+  await settle()
+  assert.equal(contexts[1].previous, complete)
+  assert.deepEqual(contexts[1].refresh, { topology: false, metadata: ["a"], messages: ["b"] })
+  emit({ type: "session.compaction.failed", created: 100, data: { sessionID: "a" } })
+  scheduler.run(200)
+  await settle()
+  assert.deepEqual(contexts[2].refresh.messages, ["a"])
+  scheduler.run(2_000)
+  await settle()
+  assert.equal(contexts[3].refresh, undefined)
+  assert.deepEqual(source.state().failureTimes, { a: 100 })
+  emit({ type: "server.connected", data: {} })
+  scheduler.run(200)
+  await settle()
+  assert.equal(contexts[4].refresh, undefined)
+  source.dispose()
+})
+
+test("native creation proves direct children before an immediate failure", async () => {
+  const { source, emit } = createHarness(async () => snapshot("parent"))
+  source.setParentID("parent")
+  await settle()
+  emit({ type: "session.created", data: { sessionID: "new", parentID: "parent" } })
+  emit({ type: "session.execution.interrupted", created: 321, data: { sessionID: "new", reason: "user" } })
+  assert.deepEqual(source.state().failureTimes, { new: 321 })
+  source.dispose()
+})
+
+function forked(id, parentID) {
+  return { type: "session.forked", data: { sessionID: id, parentID } }
 }
 
 function deleted(id) {
-  return { type: "session.deleted", properties: { sessionID: id, info: { id } } }
+  return { type: "session.deleted", data: { sessionID: id } }
 }
 
 function status(id) {
-  return { type: "session.status", properties: { sessionID: id, status: { type: "idle" } } }
+  return { type: "session.status", data: { sessionID: id, status: { type: "idle" } } }
 }
 
 function idle(id) {
-  return { type: "session.idle", properties: { sessionID: id } }
+  return { type: "session.idle", data: { sessionID: id } }
 }
 
 function error(id) {
-  return { type: "session.error", properties: { sessionID: id, error: { name: "UnknownError" } } }
+  return { type: "session.execution.failed", data: { sessionID: id, error: { type: "unknown", message: "failed" } } }
 }
 
 function messageUpdated(id) {
-  return { type: "message.updated", properties: { sessionID: id, info: { id: "message" } } }
+  return { type: "session.usage.updated", data: { sessionID: id, cost: 0, tokens: { input: 1, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } } }
 }
 
 function messageRemoved(id) {
-  return { type: "message.removed", properties: { sessionID: id, messageID: "message" } }
+  return { type: "session.revert.committed", data: { sessionID: id, to: "message" } }
 }
 
 test("loads a non-empty parent immediately and leaves an empty parent silent", async () => {
@@ -263,12 +321,12 @@ test("filters every relevant and irrelevant session and message event", async ()
 
   const irrelevant = [
     created("stranger", "other"),
-    updated("stranger", "other"),
+    forked("stranger", "other"),
     deleted("stranger"),
     status("stranger"),
     idle("stranger"),
     error("stranger"),
-    { type: "session.error", properties: {} },
+    { type: "session.execution.failed", data: {} },
     messageUpdated("stranger"),
     messageRemoved("stranger"),
   ]
@@ -278,14 +336,15 @@ test("filters every relevant and irrelevant session and message event", async ()
 
   const relevant = [
     created("created-child", "parent"),
-    updated("child", "other"),
-    updated("new-child", "parent"),
+    forked("child", "other"),
+    forked("new-child", "parent"),
     deleted("child"),
     status("child"),
     idle("child"),
     error("child"),
     messageUpdated("child"),
     messageRemoved("child"),
+    ...EVENT_TYPES.map((type) => ({ type, data: { sessionID: "child" } })),
   ]
   for (const event of relevant) {
     emit(event)
@@ -327,8 +386,21 @@ test("records the first known session error immediately and only once", async ()
   assert.deepEqual(scheduler.pendingDelays(), [200])
 })
 
+test("an earlier native failure corrects the retained time without later duplicates extending it", async () => {
+  const { source, emit, saves, failures } = createHarness(async () => snapshot("parent", "child"))
+  source.setParentID("parent")
+  await settle()
+  emit({ ...error("child"), created: 200 })
+  emit({ ...error("child"), created: 100 })
+  emit({ ...error("child"), created: 300 })
+  assert.deepEqual(source.state().failureTimes, { child: 100 })
+  assert.deepEqual(failures(), { parent: { child: 100 } })
+  assert.equal(saves.length, 2)
+  source.dispose()
+})
+
 test("retains immediate errors for event-proven direct children until publication", async () => {
-  for (const directEvent of [created("new-child", "parent"), updated("new-child", "parent")]) {
+  for (const directEvent of [created("new-child", "parent"), forked("new-child", "parent")]) {
     let clock = 100
     let attempts = 0
     const { source, scheduler, emit, saves, failures } = createHarness(
@@ -344,7 +416,7 @@ test("retains immediate errors for event-proven direct children until publicatio
     await settle()
 
     emit(created("stranger", "other"))
-    emit(updated("stranger", "other"))
+    emit(forked("stranger", "other"))
     emit(error("stranger"))
     assert.deepEqual(failures(), {})
     assert.equal(saves.length, 0)
@@ -528,7 +600,7 @@ test("marks retained ready data stale only after background retries exhaust", as
   assert.equal(source.state().snapshot, recovered)
 })
 
-test("switches slot and select parents without leaking the old body", async () => {
+test("switches view parents without leaking the old body or following other tabs", async () => {
   const slot = deferred()
   const selected = deferred()
   const contexts = []
@@ -545,10 +617,10 @@ test("switches slot and select parents without leaking the old body", async () =
   source.setParentID("slot")
   assert.equal(contexts[0].signal.aborted, true)
   assert.deepEqual(source.state(), { phase: "loading", parentID: "slot" })
-  emit({ type: "tui.session.select", properties: { sessionID: "" } })
+  emit({ type: "tui.session.select", data: { sessionID: "other-tab" } })
   assert.deepEqual(calls, ["root", "slot"])
 
-  emit({ type: "tui.session.select", properties: { sessionID: "selected" } })
+  source.setParentID("selected")
   assert.equal(contexts[1].signal.aborted, true)
   assert.deepEqual(source.state(), { phase: "loading", parentID: "selected" })
   slot.resolve(snapshot("slot", "slot-child"))
@@ -594,7 +666,7 @@ test("prunes deleted reparented and absent retained failures", async () => {
   await settle()
   assert.deepEqual(source.state().failureTimes, { kept: 10, reparented: 21 })
 
-  emit(updated("reparented", "other"))
+  emit({ type: "server.connected", data: {} })
   scheduler.run(200)
   await settle()
   assert.deepEqual(source.state().failureTimes, { kept: 10 })
