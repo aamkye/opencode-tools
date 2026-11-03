@@ -1,69 +1,25 @@
-import { createRoot, createSignal } from "solid-js"
+import type { LocationRef, McpServer } from "@opencode/client"
+import type { Plugin } from "@opencode/plugin/tui"
+import type { SlotClaim } from "@opencode/plugin/tui/context"
+import { RGBA } from "@opentui/core"
+import { createSignal } from "solid-js"
 
 import mcpPlugin from "../tui/mcp.js"
+import { createHostNode, render, type HostNode } from "./opentui-solid-host-runtime.fixture.js"
 
-type McpEntry = {
-  name: string
-  status: string
-  error?: string
+export const colors = {
+  error: RGBA.fromHex("#ff0000"), warning: RGBA.fromHex("#ffaa00"), success: RGBA.fromHex("#00ff00"),
+  text: RGBA.fromHex("#ffffff"), textMuted: RGBA.fromHex("#888888"),
 }
 
-type MountedElement = {
-  type: string | ((props: Record<string, unknown>) => unknown)
-  props: Record<string, unknown>
+function descendants(root: HostNode): HostNode[] {
+  return [root, ...root.children.flatMap(descendants)]
 }
 
-type MountedNode = {
-  element: MountedElement
-  parent?: MountedNode
-}
-
-function isElement(value: unknown): value is MountedElement {
-  return typeof value === "object" && value !== null && "type" in value && "props" in value
-}
-
-function mount(value: unknown): unknown {
-  if (!isElement(value) || typeof value.type !== "function") return value
-  if (["For", "Show"].includes(value.type.name)) return value
-  return mount(value.type(value.props))
-}
-
-function expand(value: unknown, parent?: MountedNode): MountedNode[] {
-  if (typeof value === "function") return expand(value(), parent)
-  if (Array.isArray(value)) return value.flatMap((child) => expand(child, parent))
-  if (!isElement(value)) return []
-  if (typeof value.type === "string") {
-    const node = { element: value, parent }
-    return [node, ...expand(value.props.children, node)]
-  }
-
-  if (value.type.name === "For") {
-    const items = value.props.each as readonly unknown[]
-    const render = value.props.children as (item: unknown, index: () => number) => unknown
-    return items.flatMap((item, index) => expand(render(item, () => index), parent))
-  }
-  if (value.type.name === "Show") {
-    if (!value.props.when) return []
-    const render = value.props.children
-    return expand(typeof render === "function" ? render(() => value.props.when) : render, parent)
-  }
-
-  return expand(value.type(value.props), parent)
-}
-
-function descendantsOf(nodes: readonly MountedNode[], parent: MountedNode): MountedNode[] {
-  return nodes.filter((node) => {
-    let current = node.parent
-    while (current) {
-      if (current === parent) return true
-      current = current.parent
-    }
-    return false
-  })
-}
-
-function textOf(node: MountedNode | undefined): string {
-  return typeof node?.element.props.children === "string" ? node.element.props.children : ""
+function textOf(node: HostNode | undefined): string {
+  if (!node) return ""
+  if (node.type === "#text") return String(node.props.value ?? "")
+  return node.children.map(textOf).join("")
 }
 
 function truncate(text: string, width: number): string {
@@ -73,146 +29,108 @@ function truncate(text: string, width: number): string {
   return `${text.slice(0, width - 1)}…`
 }
 
-function createLifecycle() {
-  const controller = new AbortController()
-  let cleanups: Array<() => void | Promise<void>> = []
-
-  return {
-    api: {
-      signal: controller.signal,
-      onDispose(cleanup: () => void | Promise<void>) {
-        cleanups.push(cleanup)
-        return () => {
-          cleanups = cleanups.filter((candidate) => candidate !== cleanup)
-        }
-      },
-    },
-    async dispose() {
-      controller.abort()
-      const queue = cleanups.reverse()
-      cleanups = []
-      for (const cleanup of queue) await cleanup()
-    },
-  }
-}
-
 export async function mountMcpPanel(options: {
   sessionID?: string
-  entries?: readonly McpEntry[]
+  entries?: McpServer[]
+  location?: LocationRef
+  defaultLocation?: LocationRef
   defaultState?: unknown
-  savedCollapsed?: boolean
-  store?: Map<string, unknown>
+  chip?: "enabled" | "disabled"
 } = {}) {
-  const [entries, setEntries] = createSignal<readonly McpEntry[]>(options.entries ?? [])
-  const lifecycle = createLifecycle()
-  const store = options.store ?? new Map<string, unknown>()
-  if (options.savedCollapsed !== undefined) {
-    store.set("aamkye.opencode-tools-mcp.collapsed", options.savedCollapsed)
+  const [sessionID, setSessionID] = createSignal(options.sessionID)
+  const [entries, setEntries] = createSignal(options.entries)
+  const [defaultLocation, setDefaultLocation] = createSignal(options.defaultLocation ?? { directory: "/default" })
+  const [warningColor, setWarningColor] = createSignal(colors.warning)
+  const storageCalls: string[] = []
+  const mcpCalls: Array<LocationRef | undefined> = []
+  const registrations: SlotClaim[] = []
+  const disposedSlots: Array<string | undefined> = []
+  const list: Plugin.Context["data"]["location"]["mcp"]["server"]["list"] = (location) => {
+    mcpCalls.push(location)
+    return entries()
   }
-  const kvWrites: Array<[string, unknown]> = []
-  const kvReads: string[] = []
-  const registrations: Array<{
-    order?: number
-    slots: Record<string, (ctx?: unknown, props?: { session_id?: string }) => unknown>
-  }> = []
-  const theme = {
-    error: "#ff0000",
-    warning: "#ffaa00",
-    success: "#00ff00",
-    text: "#ffffff",
-    textMuted: "#888888",
+  const slot: Plugin.Context["ui"]["slot"] = (claim) => {
+    registrations.push(claim)
+    return () => { disposedSlots.push(claim.append) }
+  }
+  const storage: Plugin.Context["storage"] = {
+    store(key) { storageCalls.push(key); throw new Error("MCP must not persist disclosure state") },
+    memory(key) { storageCalls.push(key); throw new Error("MCP must not persist disclosure state") },
   }
   const api = {
-    lifecycle: lifecycle.api,
-    slots: {
-      register(registration: { order?: number; slots: Record<string, () => unknown> }) {
-        registrations.push(registration)
-      },
+    options: { defaultState: options.defaultState, chip: options.chip },
+    location: options.location,
+    data: { location: { default: defaultLocation, mcp: { server: { list } } } },
+    ui: { slot },
+    storage,
+    get theme() {
+      return { text: {
+        base: colors.text, muted: colors.textMuted,
+        feedback: {
+          error: { base: colors.error, muted: colors.textMuted },
+          warning: { base: warningColor(), muted: colors.textMuted },
+          success: { base: colors.success, muted: colors.textMuted },
+        } satisfies Pick<Plugin.Context["theme"]["text"]["feedback"], "error" | "warning" | "success">,
+      } }
     },
-    state: {
-      mcp: entries,
-    },
-    kv: {
-      get<T>(key: string, fallback: T): T {
-        kvReads.push(key)
-        return store.has(key) ? store.get(key) as T : fallback
-      },
-      set<T>(key: string, value: T) {
-        store.set(key, value)
-        kvWrites.push([key, value])
-      },
-    },
-    theme: { current: theme },
   }
 
-  await mcpPlugin.tui(api as never, { defaultState: options.defaultState }, undefined)
-  const slot = registrations[0]?.slots.sidebar_content
-  if (!slot) throw new Error("MCP sidebar slot was not registered")
+  // Only the native Context capabilities used by this plugin are supplied by the host fixture.
+  const cleanup = await mcpPlugin.setup(api as unknown as Plugin.Context)
+  const sidebar = registrations.find((claim): claim is SlotClaim<"sidebar.content"> => claim.append === "sidebar.content")
+  const chip = registrations.find((claim): claim is SlotClaim<"prompt.footer.status"> => claim.append === "prompt.footer.status")
+  if (!sidebar) throw new Error("MCP sidebar slot was not registered")
 
-  let disposeRoot: () => void = () => undefined
-  let tree: unknown
+  const root = createHostNode("root")
+  const chipRoot = createHostNode("root")
   let slotMounts = 0
-  createRoot((dispose) => {
-    disposeRoot = dispose
+  let chipMounts = 0
+  const disposePanel = render(() => {
     slotMounts += 1
-    tree = mount(slot({}, options.sessionID ? { session_id: options.sessionID } : {}))
-  })
-
-  function nodes(): MountedNode[] {
-    return expand(tree)
-  }
+    return sidebar.render({ get sessionID() { return sessionID() ?? "" } }) as never
+  }, root)
+  const disposeChip = render(() => {
+    if (!chip) return null as never
+    chipMounts += 1
+    return chip.render({ get sessionID() { return sessionID() }, mode: "normal", showDetails: true }) as never
+  }, chipRoot)
 
   function view() {
-    const mounted = nodes()
-    const header = mounted.find((node) => node.element.type === "box" && typeof node.element.props.onMouseDown === "function")
-    const headerNodes = header ? descendantsOf(mounted, header) : []
-    const marker = headerNodes.find((node) => node.element.type === "text" && ["▶ ", "▼ "].includes(textOf(node)))
-    const summaryNodes = headerNodes.filter((node) =>
-      node.element.type === "text"
-      && node !== marker
-      && textOf(node) !== "MCP")
-    const bullets = mounted.filter((node) => node.element.type === "text" && textOf(node) === "• ")
-    const rows = bullets.map((bullet) => {
+    const nodes = descendants(root)
+    const header = nodes.find((node) => node.type === "box" && typeof node.props.onMouseDown === "function")
+    const headerNodes = header ? descendants(header) : []
+    const marker = headerNodes.find((node) => node.type === "text" && ["▶ ", "▼ "].includes(textOf(node)))
+    const summaryNodes = headerNodes.filter((node) => node.type === "text" && node !== marker && textOf(node) !== "MCP")
+    const rows = nodes.filter((node) => node.type === "text" && textOf(node) === "• ").map((bullet) => {
       const row = bullet.parent
       if (!row) throw new Error("status bullet is missing its row")
-      const children = mounted.filter((node) => node.parent === row)
-      const name = children.find((node) => node.element.type === "text" && node !== bullet && textOf(node) !== " ")
-      const labelBox = children.find((node) => node.element.type === "box")
-      const label = mounted.find((node) => node.parent === labelBox && node.element.type === "text")
-      const bulletWidth = Number(bullet.element.props.width)
-      const gapWidth = children
-        .filter((node) => node.element.type === "text" && textOf(node) === " ")
-        .reduce((total, node) => total + Number(node.element.props.width), 0)
-      const labelWidth = Number(labelBox?.element.props.width)
-      const fixedNameWidth = Number(name?.element.props.width)
-      const nameWidth = Number.isFinite(fixedNameWidth)
-        ? fixedNameWidth
-        : Math.max(0, 37 - bulletWidth - gapWidth - labelWidth)
+      const children = row.children
+      const name = children.find((node) => node.type === "text" && node !== bullet && textOf(node) !== " ")
+      const labelBox = children.find((node) => node.type === "box")
+      const label = labelBox?.children.find((node) => node.type === "text")
+      const bulletWidth = Number(bullet.props.width)
+      const gapWidth = children.filter((node) => node.type === "text" && textOf(node) === " ")
+        .reduce((total, node) => total + Number(node.props.width), 0)
+      const labelWidth = Number(labelBox?.props.width)
+      const fixedNameWidth = Number(name?.props.width)
+      const nameWidth = Number.isFinite(fixedNameWidth) ? fixedNameWidth : Math.max(0, 37 - bulletWidth - gapWidth - labelWidth)
       const renderedName = truncate(textOf(name), nameWidth).padEnd(nameWidth)
       return {
-        name: textOf(name),
-        label: textOf(label),
-        bullet: textOf(bullet),
-        bulletColor: bullet.element.props.fg,
-        labelColor: label?.element.props.fg,
+        name: textOf(name), label: textOf(label), bullet: textOf(bullet),
+        bulletColor: bullet.props.fg, labelColor: label?.props.fg,
+        nameProps: name?.props ?? {},
         cells: bulletWidth + nameWidth + gapWidth + labelWidth,
         text: `${textOf(bullet)}${renderedName}${" ".repeat(gapWidth)}${textOf(label)}`,
       }
     })
-    const dividers = mounted.filter((node) =>
-      node.element.type === "box"
-      && node.element.props.width === "100%"
-      && node.element.props.height === 1
-      && (node.element.props.border as string[] | undefined)?.[0] === "top")
-
+    const dividers = nodes.filter((node) => node.type === "box" && node.props.width === "100%"
+      && node.props.height === 1 && (node.props.border as string[] | undefined)?.[0] === "top")
     return {
-      marker: textOf(marker),
-      summaryText: summaryNodes.map(textOf).join(""),
-      summarySegments: summaryNodes.map((node) => [textOf(node), node.element.props.fg]),
-      rows,
-      dividerCount: dividers.length,
+      panel: header?.parent,
+      marker: textOf(marker), summaryText: summaryNodes.map(textOf).join(""),
+      summarySegments: summaryNodes.map((node) => [textOf(node), node.props.fg]), rows, dividerCount: dividers.length,
       clickHeader() {
-        const onMouseDown = header?.element.props.onMouseDown
+        const onMouseDown = header?.props.onMouseDown
         if (typeof onMouseDown !== "function") throw new Error("MCP header is not interactive")
         onMouseDown()
       },
@@ -221,19 +139,20 @@ export async function mountMcpPanel(options: {
 
   return {
     pluginID: mcpPlugin.id,
-    registrations,
-    kvReads,
-    kvWrites,
-    store,
+    registrations, disposedSlots, storageCalls, mcpCalls,
     setMcp: setEntries,
-    setSessionID(sessionID?: string) {
-      slot({}, sessionID ? { session_id: sessionID } : {})
-    },
+    setSessionID, setDefaultLocation, setWarningColor,
     slotMounts: () => slotMounts,
+    chipMounts: () => chipMounts,
     view,
+    chipView() {
+      const nodes = descendants(chipRoot).filter((node) => node.type === "text")
+      return { text: nodes.map(textOf).join(""), segments: nodes.map((node) => [textOf(node), node.props.fg]) }
+    },
     async dispose() {
-      disposeRoot()
-      await lifecycle.dispose()
+      disposePanel()
+      disposeChip()
+      await cleanup?.()
     },
   }
 }

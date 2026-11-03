@@ -1,9 +1,10 @@
+import type { RGBA } from "@opentui/core"
 import { For, Show, type Accessor, type JSX } from "solid-js"
 
 import { allocateStatusRow, PANEL_MAX_CELLS } from "./layout.js"
 import type { PanelStatus, PanelTextSegment } from "./types.js"
 
-export type PanelTheme = Record<PanelStatus, string>
+export type PanelTheme = Record<PanelStatus, string | RGBA>
 
 export type CompactPanelSummary = {
   text: string

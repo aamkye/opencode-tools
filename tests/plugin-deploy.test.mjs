@@ -1,579 +1,341 @@
 import assert from "node:assert/strict"
+import { existsSync } from "node:fs"
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { basename, dirname, join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
-import test, { after, before } from "node:test"
+import test from "node:test"
+import { parse } from "jsonc-parser"
 
-import { pluginManifest } from "../plugin-manifest.mjs"
+import { deployPlugins, resolveGlobalConfigRoot } from "../deploy-plugins.mjs"
 
-const projectRoot = resolve(import.meta.dirname, "..")
+const tempRoot = join(tmpdir(), "opencode")
 const obsoleteNamespace = ["opencode", "quota"].join("-")
-const rootOptions = {
-  otherProviders: { percentageMode: "remaining", sortDirection: "asc" },
-  quota: {
-    opencodego: {
-      workspaceId: "wrk_FALLBACK_TEST",
-      workspaceToken: "TOKEN_FALLBACK_TEST_ONLY_DO_NOT_USE",
-    },
-  },
-}
-const localOptions = {
-  otherProviders: { percentageMode: "used", sortDirection: "asc" },
-  quota: {
-    opencodego: {
-      workspaceId: "wrk_TESTWORKSPACE",
-      workspaceToken: "TOKEN_TEST_ONLY_DO_NOT_USE",
-    },
-  },
-}
-const globalOptions = {
-  otherProviders: { percentageMode: "remaining", sortDirection: "desc" },
-  quota: {
-    opencodego: {
-      workspaceId: "wrk_GLOBAL_TEST",
-      workspaceToken: "TOKEN_GLOBAL_TEST_ONLY_DO_NOT_USE",
-    },
-  },
-}
-const tokenCommands = [
-  "tokens_today",
-  "tokens_daily",
-  "tokens_weekly",
-  "tokens_monthly",
-  "tokens_all",
-  "tokens_session",
-  "tokens_session_all",
-  "tokens_between",
-]
-const expectedManagedSpecs = [
-  "./opencode-tools-home.js",
-  "./opencode-tools-token-report.js",
-  "./opencode-tools-context.js",
-  "./opencode-tools-ses-tokens.js",
-  "./opencode-tools-subagent.js",
-  "./opencode-tools-quota.js",
-  "./opencode-tools-mcp.js",
-  "./opencode-tools-lsp.js",
-  "./opencode-tools-todo.js",
-]
+const keys = ["home", "context", "ses-tokens", "subagent", "quota", "mcp"]
+const specs = keys.map((key) => `./opencode-tools-${key}`)
+const companion = "./opencode-tools-quota-service"
 const deployedFiles = [
-  "opencode-tools-shared.js",
-  ...expectedManagedSpecs.map((spec) => spec.slice(2)),
+  ...keys.flatMap((key) => ["package.json", "index.js", "tui.js"].map((file) => `opencode-tools-${key}/${file}`)),
+  "opencode-tools-quota-service/package.json", "opencode-tools-quota-service/index.js",
 ]
-const obsoleteArtifacts = [
-  `${obsoleteNamespace}.js`,
-  `${obsoleteNamespace}.ts`,
-  `${obsoleteNamespace}-zai.tsx`,
-  `${obsoleteNamespace}-openai.tsx`,
-  `${obsoleteNamespace}-shared.tsx`,
-  "opencode-tools-tokens.ts",
-  "plugins/opencode-tools-tokens.js",
-  "plugins/opencode-tools-tokens.ts",
-  `plugins/${obsoleteNamespace}-tokens.js`,
-  `plugins/${obsoleteNamespace}-tokens.ts`,
-  "tokens.js",
-  "tokens.ts",
-  "plugins/tokens.js",
-  "plugins/tokens.ts",
-  ...new Set([...pluginManifest.map((entry) => entry.source), "tui/context.tsx", "tui/lsp.tsx", "tui/ses-tokens.tsx", "tui/subagent.tsx"]),
-]
-const temporaryRoots = []
-let deployPlugins
-let resolveGlobalConfigRoot
+const tokenCommands = ["tokens_today", "tokens_daily", "tokens_weekly", "tokens_monthly", "tokens_all", "tokens_session", "tokens_session_all", "tokens_between"]
+const localOptions = { otherProviders: { percentageMode: "used", sortDirection: "asc" }, quota: {
+  opencodego: { workspaceId: "wrk_TESTWORKSPACE", workspaceToken: "TOKEN_TEST_ONLY_DO_NOT_USE" },
+} }
+const rootOptions = { quota: { opencodego: { workspaceId: "wrk_FALLBACK_TEST", workspaceToken: "TOKEN_FALLBACK_TEST_ONLY_DO_NOT_USE" } } }
 
-before(async () => {
-  ({ deployPlugins, resolveGlobalConfigRoot } = await import(pathToFileURL(resolve(projectRoot, "deploy-plugins.mjs"))))
-})
-
-after(async () => {
-  await Promise.all(temporaryRoots.map((root) => rm(root, { recursive: true, force: true })))
-})
-
-async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "opencode-tools-deploy-"))
-  temporaryRoots.push(root)
-  await mkdir(join(root, "plugins"), { recursive: true })
-  await writeFile(join(root, "tui.json"), JSON.stringify({
-    $schema: "https://opencode.ai/tui.json",
-    theme: "unchanged",
-    plugin: [
-      "./unrelated.js",
-      "@scope/unrelated-plugin",
-      `file:///tmp/${obsoleteNamespace}/custom-plugin.js`,
-      ["file:///tmp/unrelated/tui/quota.tsx", { preserve: "quota" }],
-      "/tmp/unrelated/tui/home.tsx",
-      "file:///tmp/unrelated/opencode-tools-quota.js",
-      ["file:///tmp/unrelated/tokens.ts?version=1", { preserve: "tokens" }],
-      ["./opencode-tools-quota.js", localOptions],
-      "./opencode-tools-quota.js",
-      ["./opencode-tools-home.js", { ignored: "home options" }],
-      "./opencode-tools-token-report.js",
-      "./opencode-tools-mcp.js",
-      "./opencode-tools-context.js",
-      "./opencode-tools-todo.js",
-      ["./opencode-tools-ses-tokens.js", { defaultState: "collapsed" }],
-      ["./opencode-tools-subagent.js", { defaultState: "semi-collapsed" }],
-      ["./tui/quota.tsx", rootOptions],
-      "./tui/home.tsx",
-      "./tui/token-report.tsx",
-      "./tui/mcp.tsx",
-      "./tui/context.tsx",
-      "./tui/todo.tsx",
-      "./tui/ses-tokens.tsx",
-      "./tui/subagent.tsx",
-      ["@aamkye/opencode-tools/tui", globalOptions],
-      [`./${obsoleteNamespace}-zai.tsx`, { legacy: "lower priority" }],
-      `./${obsoleteNamespace}.js`,
-      "./plugins/opencode-tools-tokens.js",
-    ],
-  }, null, 2))
-  for (const file of obsoleteArtifacts) {
-    const path = join(root, file)
-    await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, `obsolete ${file}`)
-  }
-  await writeFile(join(root, "opencode-tools-lsp.js"), "stale managed LSP artifact")
-  await writeFile(join(root, "tui/lsp.tsx"), "stale managed LSP source")
-  await writeFile(join(root, "opencode-tools-context.js"), "stale managed Context artifact")
-  await writeFile(join(root, "tui/context.tsx"), "stale managed Context source")
-  await writeFile(join(root, "opencode-tools-todo.js"), "stale managed TODO artifact")
-  await writeFile(join(root, "tui/todo.tsx"), "stale managed TODO source")
-  await writeFile(join(root, "opencode-tools-ses-tokens.js"), "stale managed SesTokens artifact")
-  await writeFile(join(root, "tui/ses-tokens.tsx"), "stale managed SesTokens source")
-  await writeFile(join(root, "opencode-tools-subagent.js"), "stale managed SubAgent artifact")
-  await writeFile(join(root, "tui/subagent.tsx"), "stale managed SubAgent source")
-  await writeFile(join(root, "plugins", "unrelated.js"), "preserve")
-  await writeFile(join(root, "opencode.json"), JSON.stringify({
-    $schema: "https://opencode.ai/config.json",
-    provider: { unrelated: { enabled: true } },
-    command: {
-      unrelated: { description: "Preserve this command", template: "echo unrelated" },
-      ...Object.fromEntries(tokenCommands.map((id) => [id, {
-        description: `Managed ${id}`,
-        template: "Generate the requested token usage report.",
-      }])),
-    },
-  }, null, 2))
+async function fixture(t) {
+  const root = await mkdtemp(join(tempRoot, "opencode-tools-deploy-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
   return root
 }
 
-async function snapshot(root) {
-  const files = [
-    ...deployedFiles,
-    "plugins/unrelated.js",
-    "tui.json",
-    "opencode.json",
-  ]
-  return Object.fromEntries(await Promise.all(files.map(async (file) => [file, await readFile(join(root, file), "utf8")])))
+async function put(root, path, value) {
+  await mkdir(dirname(join(root, path)), { recursive: true })
+  await writeFile(join(root, path), typeof value === "string" ? value : `${JSON.stringify(value, null, 2)}\n`)
 }
 
-async function projectFallbackSnapshot(root, configRoot) {
-  return {
-    selected: Object.fromEntries(await Promise.all([
-      ...deployedFiles,
-      "tui.json",
-      "opencode.json",
-    ].map(async (file) => [file, await readFile(join(configRoot, file), "utf8")]))),
-    projectTui: await readFile(join(root, "tui.json"), "utf8"),
-    projectOpenCode: await readFile(join(root, "opencode.json"), "utf8"),
-  }
+async function config(root, name = "opencode.json") {
+  const errors = []
+  const result = parse(await readFile(join(root, name), "utf8"), errors, { allowTrailingComma: true })
+  assert.deepEqual(errors, [])
+  return result
 }
 
-async function managedArtifactPaths(root, relative = "") {
+async function snapshot(root, relative = "") {
   const entries = await readdir(join(root, relative), { withFileTypes: true })
-  const paths = await Promise.all(entries.map(async (entry) => {
-    const path = relative ? `${relative}/${entry.name}` : entry.name
-    return entry.isDirectory() ? managedArtifactPaths(root, path) : [path]
-  }))
-  return paths.flat().filter((path) => /(?:^|\/)opencode-tools-[^/]+\.(?:js|ts)$/.test(path)).sort()
+  return Object.assign({}, ...await Promise.all(entries.map(async (entry) => {
+    const path = join(relative, entry.name)
+    return entry.isDirectory() ? snapshot(root, path) : { [path]: await readFile(join(root, path), "utf8") }
+  })))
 }
 
-const fixtureSidebarOptions = {
-  "opencode-tools-ses-tokens.js": { defaultState: "collapsed" },
-  "opencode-tools-subagent.js": { defaultState: "semi-collapsed" },
+function managedEntries(options, panels = {}) {
+  return [companion, ...specs.map((spec) => {
+    const value = spec === "./opencode-tools-quota" ? options : panels[spec]
+    return value === undefined ? spec : { package: spec, options: value }
+  })]
 }
 
-function expectedManagedEntries(options, sidebarOpts = {}) {
-  return expectedManagedSpecs.map((spec) => {
-    const outfile = spec.slice(2)
-    if (spec === "./opencode-tools-quota.js" && options !== undefined) {
-      return [spec, options]
-    }
-    const opts = sidebarOpts[outfile]
-    if (opts !== undefined) {
-      return [spec, opts]
-    }
-    return spec
+async function assertPackages(root) {
+  for (const file of deployedFiles) assert.ok((await readFile(join(root, file))).length > 0, file)
+  for (const key of keys) {
+    assert.deepEqual((await config(root, `opencode-tools-${key}/package.json`)).exports, { ".": "./index.js", "./tui": "./tui.js" })
+  }
+  assert.deepEqual((await config(root, "opencode-tools-quota-service/package.json")).exports, { ".": "./index.js" })
+  assert.equal(existsSync(join(root, "plugins/opencode-tools-home")), false)
+}
+
+for (const mode of ["local", "global"]) {
+  test(`${mode} deployment migrates managed entries and options, preserves unrelated data, and is byte-idempotent`, async (t) => {
+    const base = await fixture(t)
+    const root = mode === "global" ? resolveGlobalConfigRoot({ XDG_CONFIG_HOME: base }, "/unused-home") : join(base, ".opencode")
+    const unrelated = ["./unrelated.js", ["@scope/other", { keep: true }], { package: "@scope/native", options: { preserve: true } },
+      pathToFileURL(join(base, "other/opencode-tools-quota.js")).href,
+      [pathToFileURL(join(base, "other/tui/quota.tsx")).href, { preserve: "quota" }],
+      join(base, "other/tokens.ts")]
+    const panels = { "./opencode-tools-context": { defaultState: "collapsed" }, "./opencode-tools-ses-tokens": { defaultState: "collapsed" }, "./opencode-tools-subagent": { defaultState: "semi-collapsed" } }
+    await put(root, "tui.json", { theme: "preserved", plugin_enabled: { "internal:sidebar-context": false }, plugin: [
+      ...unrelated,
+      ["./opencode-tools-quota.js", localOptions], ["./tui/quota.tsx", rootOptions], ["@aamkye/opencode-tools/tui", { lower: "package" }],
+      [`./${obsoleteNamespace}-zai.tsx`, { lower: "legacy" }],
+      ...keys.map((key) => `./tui/${key}.tsx`),
+      ["./opencode-tools-home.js", { ignored: "home" }],
+      ...Object.entries(panels).map(([spec, options]) => [`${spec}.js`, options]),
+      "./opencode-tools-lsp.js", "./opencode-tools-todo.js", "./opencode-tools-token-report.js",
+    ] })
+    await put(root, "opencode.json", { providers: { custom: { settings: { baseURL: "https://example.com" } } }, plugin: ["@scope/server"], commands: {
+      keep: { template: "keep" }, ...Object.fromEntries(tokenCommands.map((id) => [id, { template: `/${id}` }])),
+    } })
+    await put(root, "plugins/unrelated.js", "preserve\n")
+    const obsolete = [
+      "opencode-tools-shared.js",
+      ...keys.flatMap((key) => [`opencode-tools-${key}.js`, `tui/${key}.tsx`]),
+      ...["lsp", "todo", "token-report"].flatMap((key) => [`opencode-tools-${key}.js`, `tui/${key}.tsx`, `opencode-tools-${key}/package.json`, `plugins/opencode-tools-${key}/index.js`]),
+      `${obsoleteNamespace}.js`, `${obsoleteNamespace}.ts`, `${obsoleteNamespace}-zai.tsx`, `${obsoleteNamespace}-openai.tsx`, `${obsoleteNamespace}-shared.tsx`,
+      "opencode-tools-tokens.ts", "plugins/opencode-tools-tokens.js", "plugins/opencode-tools-tokens.ts",
+      `plugins/${obsoleteNamespace}-tokens.js`, `plugins/${obsoleteNamespace}-tokens.ts`, "tokens.js", "tokens.ts", "plugins/tokens.js", "plugins/tokens.ts",
+    ]
+    for (const file of obsolete) await put(root, file, "stale\n")
+    await deployPlugins(root, { logLevel: "silent" })
+    const first = await snapshot(root)
+    assert.deepEqual((await config(root)).plugins, ["@scope/server", ...managedEntries(localOptions, panels)])
+    assert.deepEqual((await config(root)).plugin, ["@scope/server"])
+    assert.deepEqual((await config(root)).commands, { keep: { template: "keep" } })
+    assert.deepEqual((await config(root, "tui.json")).plugin, unrelated)
+    assert.equal((await config(root, "tui.json")).theme, "preserved")
+    assert.deepEqual((await config(root, "tui.json")).plugin_enabled, { "internal:sidebar-context": false })
+    assert.equal(first["plugins/unrelated.js"], "preserve\n")
+    for (const file of obsolete) assert.equal(existsSync(join(root, file)), false, file)
+    assert.equal(existsSync(join(root, "cli.json")), false)
+    await assertPackages(root)
+    await deployPlugins(root, { logLevel: "silent" })
+    assert.deepEqual(await snapshot(root), first)
   })
 }
 
-function assertPlainLspEntry(config) {
-  const entries = config.plugin.filter((entry) => (Array.isArray(entry) ? entry[0] : entry) === "./opencode-tools-lsp.js")
-  assert.deepEqual(entries, ["./opencode-tools-lsp.js"])
-}
-
-function assertPlainContextEntry(config) {
-  const entries = config.plugin.filter((entry) => (Array.isArray(entry) ? entry[0] : entry) === "./opencode-tools-context.js")
-  assert.deepEqual(entries, ["./opencode-tools-context.js"])
-}
-
-function assertPlainTodoEntry(config) {
-  const entries = config.plugin.filter((entry) => (Array.isArray(entry) ? entry[0] : entry) === "./opencode-tools-todo.js")
-  assert.deepEqual(entries, ["./opencode-tools-todo.js"])
-}
-
-function assertPlainSesTokensEntry(config) {
-  const entries = config.plugin.filter((entry) => (Array.isArray(entry) ? entry[0] : entry) === "./opencode-tools-ses-tokens.js")
-  assert.deepEqual(entries, ["./opencode-tools-ses-tokens.js"])
-}
-
-function assertPlainSubagentEntry(config) {
-  const entries = config.plugin.filter((entry) => (Array.isArray(entry) ? entry[0] : entry) === "./opencode-tools-subagent.js")
-  assert.deepEqual(entries, ["./opencode-tools-subagent.js"])
-}
-
-function assertSingleTrailingNewline(contents, label) {
-  assert.equal(contents.endsWith("\n"), true, `${label} must end with a newline`)
-  assert.equal(contents.endsWith("\n\n"), false, `${label} must end with exactly one newline`)
-}
-
-async function assertObsoleteArtifactsRemoved(root) {
-  for (const file of obsoleteArtifacts) {
-    await assert.rejects(readFile(join(root, file), "utf8"), { code: "ENOENT" })
-  }
-}
-
-test("local deployment removes token artifacts and commands while preserving unrelated config", async () => {
-  const root = await fixture()
-
+test("JSONC edits preserve unrelated comments/text and CLI settings; native options take precedence", async (t) => {
+  const root = await fixture(t)
+  const untouched = '  // custom provider comment\n  "providers": { "custom": { "settings": { "url": "https://example.com/a//b" } } },'
+  await put(root, "opencode.jsonc", `// server heading\n{\n${untouched}\n  "plugins": [
+    // preserve this plugin note and its formatting
+    { "package": "@scope/native", "options": { "keep": true } },
+    { "package": "${pathToFileURL(join(root, "opencode-tools-quota")).href}?v=2", "options": ${JSON.stringify(localOptions)} },
+    { "package": "./opencode-tools-context", "options": { "defaultState": "collapsed" } },
+  ],
+  "commands": {
+    // keep this command comment
+    "keep": { "template": "unchanged" },
+    "tokens_today": { "template": "/tokens_today" },
+  },
+}\n`)
+  await put(root, "tui.jsonc", '{\n  // theme stays here\n  "theme": "unchanged",\n  "plugin": [["./opencode-tools-quota.js", {"old": true}]],\n}\n')
+  await put(root, "cli.jsonc", '{\n  // CLI only\n  "tabs": { "mode": "off" },\n  "plugins": ["*", "-opencode.notifications", "-team.*", { "package": "@scope/cli", "options": { "x": 1 } }, "./opencode-tools-quota.js", "./opencode-tools-todo"],\n}\n')
   await deployPlugins(root, { logLevel: "silent" })
   const first = await snapshot(root)
+  assert.ok(first["opencode.jsonc"].includes(untouched))
+  assert.ok(first["opencode.jsonc"].includes("// server heading"))
+  assert.ok(first["opencode.jsonc"].includes("// keep this command comment"))
+  assert.ok(first["opencode.jsonc"].includes('// preserve this plugin note and its formatting\n    { "package": "@scope/native", "options": { "keep": true } }'))
+  assert.ok(first["tui.jsonc"].includes('// theme stays here\n  "theme": "unchanged"'))
+  assert.ok(first["cli.jsonc"].includes('// CLI only\n  "tabs": { "mode": "off" }'))
+  assert.deepEqual((await config(root, "opencode.jsonc")).plugins, [
+    { package: "@scope/native", options: { keep: true } }, ...managedEntries(localOptions, { "./opencode-tools-context": { defaultState: "collapsed" } }),
+  ])
+  assert.deepEqual((await config(root, "cli.jsonc")).plugins, ["*", "-opencode.notifications", "-team.*", { package: "@scope/cli", options: { x: 1 } }])
+  assert.equal(existsSync(join(root, "opencode.json")), false)
+  assert.equal((await config(root, "opencode.jsonc")).theme, undefined)
+  assert.equal((await config(root, "opencode.jsonc")).tabs, undefined)
+  // Reintroduced legacy input must not override the already migrated native entry.
+  await put(root, "tui.json", { plugin: [["./opencode-tools-quota.js", { stale: true }]] })
   await deployPlugins(root, { logLevel: "silent" })
+  assert.equal((await snapshot(root))["opencode.jsonc"], first["opencode.jsonc"])
   const second = await snapshot(root)
-
-  assert.deepEqual(second, first)
-  assert.equal(first["plugins/unrelated.js"], "preserve")
-  assertSingleTrailingNewline(first["tui.json"], "tui.json")
-  assertSingleTrailingNewline(first["opencode.json"], "opencode.json")
-
-  const commands = JSON.parse(await readFile(join(root, "opencode.json"), "utf8"))
-  assert.equal(commands.$schema, "https://opencode.ai/config.json")
-  assert.deepEqual(commands.provider, { unrelated: { enabled: true } })
-  assert.deepEqual(commands.command, {
-    unrelated: { description: "Preserve this command", template: "echo unrelated" },
-  })
-  assert.ok(tokenCommands.every((id) => !(id in commands.command)))
-
-  const config = JSON.parse(first["tui.json"])
-  assert.equal(config.theme, "unchanged")
-  assert.deepEqual(config.plugin, [
-    "./unrelated.js",
-    "@scope/unrelated-plugin",
-    `file:///tmp/${obsoleteNamespace}/custom-plugin.js`,
-    ["file:///tmp/unrelated/tui/quota.tsx", { preserve: "quota" }],
-    "/tmp/unrelated/tui/home.tsx",
-    "file:///tmp/unrelated/opencode-tools-quota.js",
-    ["file:///tmp/unrelated/tokens.ts?version=1", { preserve: "tokens" }],
-    ...expectedManagedEntries(localOptions, fixtureSidebarOptions),
-  ])
-  assertPlainContextEntry(config)
-  assertPlainLspEntry(config)
-  assertPlainTodoEntry(config)
-  assert.deepEqual(config.plugin.filter((entry) => (Array.isArray(entry) ? entry[0] : entry) === "./opencode-tools-ses-tokens.js"), [["./opencode-tools-ses-tokens.js", { defaultState: "collapsed" }]])
-  assert.deepEqual(config.plugin.filter((entry) => (Array.isArray(entry) ? entry[0] : entry) === "./opencode-tools-subagent.js"), [["./opencode-tools-subagent.js", { defaultState: "semi-collapsed" }]])
-  assert.deepEqual(config.plugin.find((entry) => Array.isArray(entry) && entry[0] === "./opencode-tools-quota.js")[1], {
-    otherProviders: { percentageMode: "used", sortDirection: "asc" },
-    quota: {
-      opencodego: {
-        workspaceId: "wrk_TESTWORKSPACE",
-        workspaceToken: "TOKEN_TEST_ONLY_DO_NOT_USE",
-      },
-    },
-  })
-  assert.equal(config.plugin.filter((entry) => (Array.isArray(entry) ? entry[0] : entry) === "./opencode-tools-quota.js").length, 1)
-  assert.ok(config.plugin.every((entry) => !/^@aamkye\/opencode-(?:tools|quota)/.test(Array.isArray(entry) ? entry[0] : entry)))
-
-  await assertObsoleteArtifactsRemoved(root)
-
-  for (const deployed of deployedFiles) {
-    assert.equal(first[deployed], await readFile(resolve(projectRoot, "dist", deployed), "utf8"))
-  }
-  assert.deepEqual(await managedArtifactPaths(root), deployedFiles.toSorted())
-})
-
-test("deployment removes an empty managed command object", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opencode-tools-managed-commands-"))
-  temporaryRoots.push(root)
-  await writeFile(join(root, "opencode.json"), JSON.stringify({
-    command: Object.fromEntries(tokenCommands.map((id) => [id, { template: `/${id}` }])),
-  }))
-
   await deployPlugins(root, { logLevel: "silent" })
-
-  const openCodeBytes = await readFile(join(root, "opencode.json"), "utf8")
-  const tuiBytes = await readFile(join(root, "tui.json"), "utf8")
-  const config = JSON.parse(openCodeBytes)
-  assert.equal("command" in config, false)
-  assert.deepEqual(JSON.parse(tuiBytes).plugin, expectedManagedEntries())
-  assertSingleTrailingNewline(openCodeBytes, "opencode.json")
-  assertSingleTrailingNewline(tuiBytes, "tui.json")
+  assert.deepEqual(await snapshot(root), second)
 })
 
-test("local deployment preserves project fallback semantics across repeated migration", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opencode-tools-project-"))
-  temporaryRoots.push(root)
-  const configRoot = join(root, ".opencode")
-  await mkdir(configRoot, { recursive: true })
+const precedenceCases = [
+  { name: "artifact over source independent of order", local: [["./tui/quota.tsx", { source: true }], ["./opencode-tools-quota.js", localOptions]], want: localOptions },
+  { name: "source over package", local: [["@aamkye/opencode-tools/tui", { package: true }], ["./tui/quota.tsx", localOptions]], want: localOptions },
+  { name: "package over legacy", local: [[`./${obsoleteNamespace}-zai.tsx`, { legacy: true }], ["opencode-tools", localOptions]], want: localOptions },
+  { name: "legacy fallback", local: [[`./${obsoleteNamespace}-openai.tsx`, localOptions]], want: localOptions },
+  { name: "local legacy over root artifact", local: [[`./${obsoleteNamespace}-zai.tsx`, localOptions]], root: [["./opencode-tools-quota.js", rootOptions]], want: localOptions },
+  { name: "root options when local has no options", local: ["./opencode-tools-quota.js"], root: [["./tui/quota.tsx", rootOptions]], want: rootOptions },
+  { name: "per-panel artifact over source", local: [["./opencode-tools-context.js", { defaultState: "collapsed" }], ["./tui/context.tsx", { defaultState: "expanded" }]], wantPanel: { defaultState: "collapsed" } },
+  { name: "cleanup-only historical options never become quota options", local: [["./tokens.ts", { reportOnly: true }], [`./${obsoleteNamespace}-shared.tsx`, { helperOnly: true }]] },
+  { name: "native string preserves default options over legacy tuples", local: ["./opencode-tools-quota", ["./opencode-tools-quota.js", localOptions]] },
+  { name: "slash-qualified V1 ID preserves quota options", local: [["aamkye/opencode-tools-quota", localOptions]], want: localOptions },
+  { name: "native dotted ID preserves quota options", local: [{ package: "aamkye.opencode-tools-quota", options: localOptions }], want: localOptions },
+]
+for (const scenario of precedenceCases) {
+  test(`migration precedence: ${scenario.name}`, async (t) => {
+    const root = await fixture(t)
+    const target = join(root, ".opencode")
+    await put(root, "tui.json", { theme: "root-theme", plugin: ["./root-unrelated.js", ...(scenario.root ?? [])] })
+    await put(root, "opencode.json", { formatter: { keep: true }, command: { tokens_today: { template: "/tokens_today" } } })
+    await put(target, "tui.json", { theme: "selected-theme", plugin: ["./local-unrelated.js", ...scenario.local] })
+    await deployPlugins(target, { logLevel: "silent", projectConfigRoot: root })
+    assert.deepEqual((await config(target)).plugins, managedEntries(scenario.want, scenario.wantPanel ? { "./opencode-tools-context": scenario.wantPanel } : {}))
+    assert.deepEqual(await config(root, "tui.json"), { theme: "root-theme", plugin: ["./root-unrelated.js"] })
+    assert.deepEqual(await config(target, "tui.json"), { theme: "selected-theme", plugin: ["./local-unrelated.js"] })
+    assert.deepEqual(await config(root), { formatter: { keep: true } })
+    const first = await snapshot(root)
+    await deployPlugins(target, { logLevel: "silent", projectConfigRoot: root })
+    assert.deepEqual(await snapshot(root), first)
+  })
+}
 
-  await writeFile(join(root, "tui.json"), JSON.stringify({
-    $schema: "https://opencode.ai/tui.json",
-    theme: "root-theme",
-    plugin: [
-      "./root-unrelated-first.js",
-      ["./tui/quota.tsx", rootOptions],
-      ["./root-unrelated-middle.js", { preserve: "middle" }],
-      "./tui/home.tsx",
-      "./tui/token-report.tsx",
-      "./tui/mcp.tsx",
-      "./tui/context.tsx",
-      "./tui/todo.tsx",
-      "./tui/ses-tokens.tsx",
-      "./tui/subagent.tsx",
-      ["@aamkye/opencode-tools/tui", globalOptions],
-      "@scope/root-unrelated-last",
-      [`./${obsoleteNamespace}-zai.tsx`, localOptions],
-      "./opencode-tools-home.js",
-    ],
-  }, null, 2))
-  await writeFile(join(root, "opencode.json"), JSON.stringify({
-    $schema: "https://opencode.ai/config.json",
-    formatter: { unrelated: { enabled: true } },
-    command: {
-      unrelated: { description: "Preserve this command", template: "echo unrelated" },
-      ...Object.fromEntries(tokenCommands.map((id) => [id, {
-        description: `Managed ${id}`,
-        template: "Generate the requested token usage report.",
-      }])),
-    },
-  }, null, 2))
-  await writeFile(join(configRoot, "tui.json"), JSON.stringify({
-    $schema: "https://opencode.ai/tui.json",
-    theme: "selected-theme",
-    plugin: [
-      "./selected-unrelated-first.js",
-      "./opencode-tools-quota.js",
-      "./opencode-tools-home.js",
-      ["./selected-unrelated-middle.js", { preserve: "middle" }],
-      "./opencode-tools-token-report.js",
-      "./opencode-tools-mcp.js",
-      "./opencode-tools-context.js",
-      "./opencode-tools-todo.js",
-      ["./opencode-tools-ses-tokens.js", { defaultState: "collapsed" }],
-      ["./opencode-tools-subagent.js", { defaultState: "semi-collapsed" }],
-      "./tui/home.tsx",
-      "@aamkye/opencode-tools/tui",
-      "file:///tmp/selected-unrelated-last.js",
-    ],
-  }, null, 2))
-  for (const file of obsoleteArtifacts) {
-    const path = join(configRoot, file)
-    await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, `obsolete ${file}`)
+test("retired package/path/ID variants are removed only inside the owned target", async (t) => {
+  const root = await fixture(t)
+  const target = join(root, "managed")
+  const unrelated = []
+  const retired = []
+  for (const key of ["lsp", "todo", "token-report"]) {
+    for (const path of [`opencode-tools-${key}.js`, `tui/${key}.tsx`, `opencode-tools-${key}`, `plugins/opencode-tools-${key}`]) {
+      const file = /\.(?:js|tsx)$/.test(path) ? path : `${path}/index.js`
+      await put(target, file, "stale\n")
+      await put(root, `outside/${file}`, "preserve\n")
+      unrelated.push({ package: `${pathToFileURL(join(root, "outside", path)).href}?v=1`, options: { keep: true } })
+      retired.push({ package: `${pathToFileURL(join(target, path)).href}?v=1`, options: { retired: true } })
+    }
+    retired.push(`aamkye/opencode-tools-${key}`, [`@aamkye/opencode-tools/${key}`, { retired: true }], `opencode-tools/${key}`)
   }
-  await writeFile(join(configRoot, "opencode-tools-lsp.js"), "stale managed LSP artifact")
-  await writeFile(join(configRoot, "tui/lsp.tsx"), "stale managed LSP source")
-  await writeFile(join(configRoot, "opencode-tools-context.js"), "stale managed Context artifact")
-  await writeFile(join(configRoot, "tui/context.tsx"), "stale managed Context source")
-  await writeFile(join(configRoot, "opencode-tools-todo.js"), "stale managed TODO artifact")
-  await writeFile(join(configRoot, "tui/todo.tsx"), "stale managed TODO source")
-  await writeFile(join(configRoot, "opencode-tools-ses-tokens.js"), "stale managed SesTokens artifact")
-  await writeFile(join(configRoot, "tui/ses-tokens.tsx"), "stale managed SesTokens source")
-  await writeFile(join(configRoot, "opencode-tools-subagent.js"), "stale managed SubAgent artifact")
-  await writeFile(join(configRoot, "tui/subagent.tsx"), "stale managed SubAgent source")
-
-  const initialSelectedConfig = JSON.parse(await readFile(join(configRoot, "tui.json"), "utf8"))
-  assert.equal(JSON.stringify(initialSelectedConfig).includes("opencodego"), false)
-
-  await deployPlugins(configRoot, { logLevel: "silent", projectConfigRoot: root })
-
-  const first = await projectFallbackSnapshot(root, configRoot)
-  await deployPlugins(configRoot, { logLevel: "silent", projectConfigRoot: root })
-  const second = await projectFallbackSnapshot(root, configRoot)
-
-  assert.deepEqual(second, first)
-  const rootConfig = JSON.parse(first.projectTui)
-  const selectedConfig = JSON.parse(first.selected["tui.json"])
-  const rootOpenCodeConfig = JSON.parse(first.projectOpenCode)
-  assert.equal(rootConfig.theme, "root-theme")
-  assert.deepEqual(rootConfig.plugin, [
-    "./root-unrelated-first.js",
-    ["./root-unrelated-middle.js", { preserve: "middle" }],
-    "@scope/root-unrelated-last",
-  ])
-  assert.equal(selectedConfig.theme, "selected-theme")
-  assert.deepEqual(selectedConfig.plugin, [
-    "./selected-unrelated-first.js",
-    ["./selected-unrelated-middle.js", { preserve: "middle" }],
-    "file:///tmp/selected-unrelated-last.js",
-    ...expectedManagedEntries(rootOptions, fixtureSidebarOptions),
-  ])
-  assertPlainContextEntry(selectedConfig)
-  assertPlainLspEntry(selectedConfig)
-  assertPlainTodoEntry(selectedConfig)
-  assert.deepEqual(selectedConfig.plugin.filter((entry) => (Array.isArray(entry) ? entry[0] : entry) === "./opencode-tools-ses-tokens.js"), [["./opencode-tools-ses-tokens.js", { defaultState: "collapsed" }]])
-  assert.deepEqual(selectedConfig.plugin.filter((entry) => (Array.isArray(entry) ? entry[0] : entry) === "./opencode-tools-subagent.js"), [["./opencode-tools-subagent.js", { defaultState: "semi-collapsed" }]])
-  assert.deepEqual(selectedConfig.plugin.find((entry) => Array.isArray(entry) && entry[0] === "./opencode-tools-quota.js")[1], {
-    otherProviders: { percentageMode: "remaining", sortDirection: "asc" },
-    quota: {
-      opencodego: {
-        workspaceId: "wrk_FALLBACK_TEST",
-        workspaceToken: "TOKEN_FALLBACK_TEST_ONLY_DO_NOT_USE",
-      },
-    },
-  })
-  assert.equal(rootOpenCodeConfig.$schema, "https://opencode.ai/config.json")
-  assert.deepEqual(rootOpenCodeConfig.formatter, { unrelated: { enabled: true } })
-  assert.deepEqual(rootOpenCodeConfig.command, {
-    unrelated: { description: "Preserve this command", template: "echo unrelated" },
-  })
-  assert.ok(tokenCommands.every((id) => !(id in rootOpenCodeConfig.command)))
-
-  const activeManagedEntries = [
-    ...rootConfig.plugin.map((entry) => ({ entry, root })),
-    ...selectedConfig.plugin.map((entry) => ({ entry, root: configRoot })),
-  ].filter(({ entry, root: entryRoot }) => {
-    const spec = Array.isArray(entry) ? entry[0] : entry
-    return pluginManifest.some((manifestEntry) => (
-      resolve(entryRoot, spec) === join(configRoot, manifestEntry.outfile)
-      || resolve(entryRoot, spec) === join(root, manifestEntry.source)
-    ))
-  })
-  assert.equal(activeManagedEntries.length, pluginManifest.length)
-  assertSingleTrailingNewline(first.projectTui, "project tui.json")
-  assertSingleTrailingNewline(first.selected["tui.json"], "selected tui.json")
-  assertSingleTrailingNewline(first.projectOpenCode, "project opencode.json")
-  assertSingleTrailingNewline(first.selected["opencode.json"], "selected opencode.json")
-  await assertObsoleteArtifactsRemoved(configRoot)
-  assert.deepEqual(await managedArtifactPaths(configRoot), deployedFiles.toSorted())
-  for (const deployed of deployedFiles) {
-    assert.equal(first.selected[deployed], await readFile(resolve(projectRoot, "dist", deployed), "utf8"))
-  }
+  await put(target, "opencode.json", { plugins: [...unrelated, ...retired] })
+  const outside = await snapshot(join(root, "outside"))
+  await deployPlugins(target, { logLevel: "silent" })
+  assert.deepEqual((await config(target)).plugins, [...unrelated, ...managedEntries()])
+  assert.deepEqual(await snapshot(join(root, "outside")), outside)
+  for (const path of Object.keys(outside)) assert.equal(existsSync(join(target, path)), false, path)
 })
 
-test("global deployment removes token artifacts and commands while preserving unrelated config", async () => {
-  const xdgRoot = await mkdtemp(join(tmpdir(), "opencode-tools-xdg-"))
-  temporaryRoots.push(xdgRoot)
-  const root = resolveGlobalConfigRoot({ XDG_CONFIG_HOME: xdgRoot }, "/unused-home")
-  assert.equal(root, join(xdgRoot, "opencode"))
+for (const file of ["opencode.json", "opencode.jsonc", "tui.json", "tui.jsonc", "cli.json", "cli.jsonc", "../opencode.jsonc", "../tui.jsonc"]) {
+  test(`rejects malformed ${file} before replacing or deleting deployment files`, async (t) => {
+    const root = await fixture(t)
+    const target = join(root, ".opencode")
+    await put(target, "opencode-tools-shared.js", "existing build\n")
+    await put(target, "opencode-tools-lsp.js", "existing retired file\n")
+    await put(target, "opencode.json", { plugins: ["keep"] })
+    await put(target, file, '{ "plugins": ["keep"] "broken": true }')
+    const before = await snapshot(root)
+    await assert.rejects(deployPlugins(target, { logLevel: "silent", projectConfigRoot: root }), (error) => {
+      assert.ok(error.message.includes(`Invalid OpenCode configuration: ${resolve(target, file)}`))
+      return true
+    })
+    assert.deepEqual(await snapshot(root), before)
+  })
+}
 
-  await mkdir(join(root, "plugins"), { recursive: true })
-  await writeFile(join(root, "tui.json"), JSON.stringify({
-    plugin: [
-      "file:///tmp/other.js",
-      ["file:///tmp/unrelated/tui/quota.tsx", { preserve: "quota" }],
-      "/tmp/unrelated/tui/home.tsx",
-      "file:///tmp/unrelated/opencode-tools-quota.js",
-      "file:///tmp/unrelated/tokens.ts",
-      ["opencode-tools", globalOptions],
-      "./opencode-tools-quota.js",
-      "./opencode-tools-home.js",
-      "./opencode-tools-token-report.js",
-      "./opencode-tools-mcp.js",
-      "./opencode-tools-context.js",
-      "./opencode-tools-todo.js",
-      ["./opencode-tools-ses-tokens.js", { defaultState: "collapsed" }],
-      ["./opencode-tools-subagent.js", { defaultState: "semi-collapsed" }],
-      ["./opencode-tools-home.js", { ignored: "home options" }],
-      "./tui/quota.tsx",
-      "./tui/home.tsx",
-      "./tui/token-report.tsx",
-      "./tui/mcp.tsx",
-      "./tui/context.tsx",
-      "./tui/todo.tsx",
-      "./tui/ses-tokens.tsx",
-      "./tui/subagent.tsx",
-      [`./${obsoleteNamespace}-openai.tsx`, { legacy: "lower priority" }],
-      "./tokens.ts",
-    ],
-  }))
-  for (const file of obsoleteArtifacts) {
-    const path = join(root, file)
-    await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, `obsolete ${file}`)
-  }
-  await writeFile(join(root, "opencode-tools-lsp.js"), "stale managed LSP artifact")
-  await writeFile(join(root, "tui/lsp.tsx"), "stale managed LSP source")
-  await writeFile(join(root, "opencode-tools-context.js"), "stale managed Context artifact")
-  await writeFile(join(root, "tui/context.tsx"), "stale managed Context source")
-  await writeFile(join(root, "opencode-tools-todo.js"), "stale managed TODO artifact")
-  await writeFile(join(root, "tui/todo.tsx"), "stale managed TODO source")
-  await writeFile(join(root, "opencode-tools-ses-tokens.js"), "stale managed SesTokens artifact")
-  await writeFile(join(root, "tui/ses-tokens.tsx"), "stale managed SesTokens source")
-  await writeFile(join(root, "opencode-tools-subagent.js"), "stale managed SubAgent artifact")
-  await writeFile(join(root, "tui/subagent.tsx"), "stale managed SubAgent source")
-  await writeFile(join(root, "plugins", "unrelated.js"), "preserve")
-  await writeFile(join(root, "opencode.json"), JSON.stringify({
-    $schema: "https://opencode.ai/config.json",
-    provider: { unrelated: { enabled: true } },
-    formatter: { unrelated: { enabled: true } },
-    command: {
-      unrelated: { description: "Preserve this command", template: "echo unrelated" },
-      ...Object.fromEntries(tokenCommands.map((id) => [id, {
-        description: `Managed ${id}`,
-        template: "Generate the requested token usage report.",
-      }])),
-    },
-  }, null, 2))
+for (const text of ["[]", "null", "false", "", '{ "plugins": {} }']) {
+  test(`rejects invalid config root or plugin container: ${JSON.stringify(text)}`, async (t) => {
+    const root = await fixture(t)
+    await put(root, "opencode.json", text)
+    await assert.rejects(deployPlugins(root, { logLevel: "silent" }), /Invalid OpenCode configuration:/)
+    assert.deepEqual(await snapshot(root), { "opencode.json": text })
+  })
+}
 
+test("fresh deployment registers the independent quota service and creates only server config", async (t) => {
+  const root = await fixture(t)
   await deployPlugins(root, { logLevel: "silent" })
-  const first = await snapshot(root)
-  await deployPlugins(root, { logLevel: "silent" })
-  const second = await snapshot(root)
-
-  assert.deepEqual(second, first)
-  assert.equal(first["plugins/unrelated.js"], "preserve")
-  assertSingleTrailingNewline(first["tui.json"], "global tui.json")
-  assertSingleTrailingNewline(first["opencode.json"], "global opencode.json")
-
-  const config = JSON.parse(first["tui.json"])
-  assert.deepEqual(config.plugin, [
-    "file:///tmp/other.js",
-    ["file:///tmp/unrelated/tui/quota.tsx", { preserve: "quota" }],
-    "/tmp/unrelated/tui/home.tsx",
-    "file:///tmp/unrelated/opencode-tools-quota.js",
-    "file:///tmp/unrelated/tokens.ts",
-    ...expectedManagedEntries(globalOptions, fixtureSidebarOptions),
-  ])
-  assertPlainContextEntry(config)
-  assertPlainLspEntry(config)
-  assertPlainTodoEntry(config)
-  assert.deepEqual(config.plugin.filter((entry) => (Array.isArray(entry) ? entry[0] : entry) === "./opencode-tools-ses-tokens.js"), [["./opencode-tools-ses-tokens.js", { defaultState: "collapsed" }]])
-  assert.deepEqual(config.plugin.filter((entry) => (Array.isArray(entry) ? entry[0] : entry) === "./opencode-tools-subagent.js"), [["./opencode-tools-subagent.js", { defaultState: "semi-collapsed" }]])
-  assert.deepEqual(config.plugin.find((entry) => Array.isArray(entry) && entry[0] === "./opencode-tools-quota.js")[1], {
-    otherProviders: { percentageMode: "remaining", sortDirection: "desc" },
-    quota: {
-      opencodego: {
-        workspaceId: "wrk_GLOBAL_TEST",
-        workspaceToken: "TOKEN_GLOBAL_TEST_ONLY_DO_NOT_USE",
-      },
-    },
-  })
-  assert.equal(basename(root), "opencode")
-  const commands = JSON.parse(first["opencode.json"])
-  assert.equal(commands.$schema, "https://opencode.ai/config.json")
-  assert.deepEqual(commands.provider, { unrelated: { enabled: true } })
-  assert.deepEqual(commands.formatter, { unrelated: { enabled: true } })
-  assert.deepEqual(commands.command, {
-    unrelated: { description: "Preserve this command", template: "echo unrelated" },
-  })
-  assert.ok(tokenCommands.every((id) => !(id in commands.command)))
-  await assertObsoleteArtifactsRemoved(root)
-  assert.deepEqual(await managedArtifactPaths(root), deployedFiles.toSorted())
+  assert.deepEqual(await config(root), { $schema: "https://opencode.ai/config.json", plugins: managedEntries() })
+  assert.deepEqual(Object.keys(await snapshot(root)).sort(), ["opencode.json", ...deployedFiles].sort())
+  assert.equal(resolveGlobalConfigRoot({}, "/fixture/home"), "/fixture/home/.config/opencode")
+  assert.equal(resolveGlobalConfigRoot({ XDG_CONFIG_HOME: " " }, "/fixture/home"), "/fixture/home/.config/opencode")
 })
 
-test("package scripts expose local and global deployment without npm plugin specs", async () => {
-  const pkg = JSON.parse(await readFile(resolve(projectRoot, "package.json"), "utf8"))
+for (const native of [undefined, [], [{ package: "@scope/native-wins", options: { current: true } }]]) {
+  for (const nativeFirst of native === undefined ? [false] : [false, true]) {
+    const label = native === undefined ? "legacy-only" : native.length === 0 ? "empty native" : "nonempty native"
+    test(`server field precedence: ${label}, native key ${nativeFirst ? "first" : "last"}`, async (t) => {
+      const root = await fixture(t)
+      const legacy = ["@scope/plain", ["@scope/options", { enabled: true }], ["@scope/native-wins", { old: true }]]
+      const legacyField = { plugin: [...legacy, ["./opencode-tools-quota.js", localOptions]] }
+      const nativeField = native === undefined ? {} : { plugins: native }
+      await put(root, "opencode.json", nativeFirst ? { ...nativeField, ...legacyField } : { ...legacyField, ...nativeField })
+      await deployPlugins(root, { logLevel: "silent" })
+      assert.deepEqual((await config(root)).plugin, legacy)
+      assert.deepEqual((await config(root)).plugins, native === undefined
+        ? ["@scope/plain", { package: "@scope/options", options: { enabled: true } }, { package: "@scope/native-wins", options: { old: true } }, ...managedEntries(localOptions)]
+        : [...native, ...managedEntries()])
+      const first = await snapshot(root)
+      await deployPlugins(root, { logLevel: "silent" })
+      assert.deepEqual(await snapshot(root), first)
+    })
+  }
+}
+
+for (const field of ["command", "commands"]) {
+  for (const existingPlugins of [true, false]) {
+    test(`JSONC ${field} deletion preserves adjacent text when ${existingPlugins ? "updating" : "creating"} native config`, async (t) => {
+      const root = await fixture(t)
+      const keep = '    // Keep command documentation\n    /* Keep block comment */\n    "keep"  : { "template" : "unchanged", "description": "custom spacing" }'
+      const preferences = '  // Keep agent documentation\n  "agents" : { "title" : { "disabled" : false } }'
+      const plugins = existingPlugins ? '  "plugins": [],\n' : ""
+      await put(root, "opencode.jsonc", `{
+${plugins}  "${field}": {
+    "tokens_today": { "template": "/tokens_today" },
+${keep}
+  },
+${preferences}
+}\n`)
+      await deployPlugins(root, { logLevel: "silent" })
+      const text = await readFile(join(root, "opencode.jsonc"), "utf8")
+      assert.ok(text.includes(keep), text)
+      assert.ok(text.includes(preferences), text)
+      assert.deepEqual((await config(root, "opencode.jsonc"))[field], { keep: { template: "unchanged", description: "custom spacing" } })
+      const first = await snapshot(root)
+      await deployPlugins(root, { logLevel: "silent" })
+      assert.deepEqual(await snapshot(root), first)
+    })
+  }
+}
+
+for (const [prefix, field, objectForm] of [["@aamkye/opencode-tools", "plugin", false], ["opencode-tools", "plugins", true]]) {
+  test(`feature package subpaths keep each feature's options: ${prefix}`, async (t) => {
+    const root = await fixture(t)
+    const featureOptions = [
+      ["home", { ignored: "Home has no options" }],
+      ["context", { defaultState: "collapsed" }],
+      ["ses-tokens", { defaultState: "expanded", chip: false }],
+      ["subagent", { defaultState: "semi-collapsed" }],
+      ["quota", localOptions],
+      ["mcp", { defaultState: "collapsed", chip: false }],
+    ]
+    await put(root, "tui.json", { [field]: featureOptions.map(([key, options]) => {
+      const spec = `${prefix}/${key}?version=1`
+      return objectForm ? { package: spec, options } : [spec, options]
+    }) })
+    await deployPlugins(root, { logLevel: "silent" })
+    assert.deepEqual((await config(root)).plugins, managedEntries(localOptions, {
+      "./opencode-tools-context": { defaultState: "collapsed" },
+      "./opencode-tools-ses-tokens": { defaultState: "expanded", chip: false },
+      "./opencode-tools-subagent": { defaultState: "semi-collapsed" },
+      "./opencode-tools-mcp": { defaultState: "collapsed", chip: false },
+    }))
+    assert.deepEqual((await config(root, "tui.json"))[field], [])
+    const first = await snapshot(root)
+    await deployPlugins(root, { logLevel: "silent" })
+    assert.deepEqual(await snapshot(root), first)
+  })
+}
+
+test("native root options outrank legacy local input and matching unmanaged root packages survive", async (t) => {
+  const root = await fixture(t)
+  const target = join(root, ".opencode")
+  await put(root, "opencode.jsonc", { plugins: [
+    { package: "./.opencode/opencode-tools-quota", options: rootOptions },
+    { package: "./opencode-tools-quota", options: { outside: true } },
+    { package: "./.opencode/opencode-tools-context", options: { defaultState: "collapsed" } },
+  ] })
+  await put(target, "tui.json", { plugin: [["./opencode-tools-quota.js", localOptions]] })
+  await deployPlugins(target, { logLevel: "silent", projectConfigRoot: root })
+  assert.deepEqual((await config(target)).plugins, managedEntries(rootOptions, { "./opencode-tools-context": { defaultState: "collapsed" } }))
+  assert.deepEqual((await config(root, "opencode.jsonc")).plugins, [{ package: "./opencode-tools-quota", options: { outside: true } }])
+})
+
+test("package scripts expose local and global deployment", async () => {
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
   assert.equal(pkg.scripts["deploy:local"], "node deploy-plugins.mjs local")
   assert.equal(pkg.scripts["deploy:global"], "node deploy-plugins.mjs global")
   assert.doesNotMatch(JSON.stringify(pkg.scripts), /npm:(?:@aamkye\/)?opencode-(?:tools|quota)/)

@@ -1,19 +1,16 @@
 {
   "name": "@aamkye/opencode-tools",
   "version": "1.0.0",
-  "description": "OpenCode TUI sidebar plugin for GLM rate limit reset countdown",
+  "description": "Native OpenCode V2 quota, context, session tokens, SubAgent, Home and MCP plugins",
   "private": true,
   "type": "module",
   "exports": {
-    "./home": "./tui/home.tsx",
-    "./token-report": "./tui/token-report.tsx",
-    "./context": "./tui/context.tsx",
-    "./ses-tokens": "./tui/ses-tokens.tsx",
-    "./subagent": "./tui/subagent.tsx",
-    "./quota": "./tui/quota.tsx",
-    "./mcp": "./tui/mcp.tsx",
-    "./lsp": "./tui/lsp.tsx",
-    "./todo": "./tui/todo.tsx"
+    "./home": "./dist/opencode-tools-home/tui.js",
+    "./context": "./dist/opencode-tools-context/tui.js",
+    "./ses-tokens": "./dist/opencode-tools-ses-tokens/tui.js",
+    "./subagent": "./dist/opencode-tools-subagent/tui.js",
+    "./quota": "./dist/opencode-tools-quota/tui.js",
+    "./mcp": "./dist/opencode-tools-mcp/tui.js"
   },
   "files": [
     "dist",
@@ -23,13 +20,13 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node tests/compile-session-rename.mjs && node tests/compile-presentation.mjs && node --test tests/*.test.mjs",
+    "test": "node tests/compile-presentation.mjs && node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
+    "test:v2-smoke": "node tests/v2-plugin-smoke.mjs",
     "build": "npm run build:plugins",
     "build:plugins": "node build-plugins.mjs",
     "deploy:local": "node deploy-plugins.mjs local",
-    "deploy:global": "node deploy-plugins.mjs global",
-    "build:session-rename": "node build-session-rename.mjs"
+    "deploy:global": "node deploy-plugins.mjs global"
   },
   "keywords": [
     "opencode",
@@ -41,14 +38,17 @@
   ],
   "license": "MIT",
   "engines": {
-    "opencode": ">=1.18.1"
+    "opencode": ">=2.0.16"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.3.3",
-    "@opentui/core": "^0.4.2",
-    "@opentui/solid": "^0.4.2",
+    "@opencode/client": "2.0.16",
+    "@opencode/plugin": "2.0.16",
+    "@opencode/theme": "2.0.16",
+    "@opentui/core": "0.5.10",
+    "@opentui/solid": "0.5.10",
     "solid-js": "^1.9.12",
-    "string-width": "7.2.0"
+    "string-width": "7.2.0",
+    "zod": "4.1.8"
   },
   "devDependencies": {
     "@babel/core": "^7.28.0",
@@ -56,6 +56,7 @@
     "@types/node": "^26.0.1",
     "babel-preset-solid": "^1.9.12",
     "esbuild": "^0.28.1",
+    "jsonc-parser": "^3.3.1",
     "typescript": "^6.0.3"
   }
 }

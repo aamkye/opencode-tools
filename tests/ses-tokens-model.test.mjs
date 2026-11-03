@@ -4,7 +4,7 @@ import test from "node:test"
 const { createSesTokensPanelModel } = await import("../.tmp-test/ses-tokens-model.mjs")
 
 const assistant = (tokens = {}) => ({
-  role: "assistant",
+  type: "assistant",
   tokens: {
     input: 0,
     output: 0,
@@ -17,7 +17,8 @@ const assistant = (tokens = {}) => ({
 test("aggregates every assistant turn and all five detailed buckets", () => {
   const model = createSesTokensPanelModel([
     assistant({ input: 1_000, output: 20, reasoning: 30, cache: { read: 4_000, write: 50 } }),
-    { role: "user", tokens: { input: 999_999 } },
+    { type: "user", tokens: { input: 999_999 } },
+    { type: "compaction", tokens: { input: 999_999 } },
     assistant({ input: 500, output: 80, reasoning: 70, cache: { read: 2_000, write: 250 } }),
   ])
   assert.deepEqual(model, {
@@ -35,7 +36,7 @@ test("aggregates every assistant turn and all five detailed buckets", () => {
 
 test("counts zero-token assistants and treats missing or non-finite fields as zero", () => {
   const model = createSesTokensPanelModel([
-    { role: "assistant" },
+    { type: "assistant" },
     assistant({ input: Number.NaN, output: Number.POSITIVE_INFINITY, reasoning: 0, cache: { read: 0, write: Number.NEGATIVE_INFINITY } }),
   ])
   assert.equal(model.turns, "2")

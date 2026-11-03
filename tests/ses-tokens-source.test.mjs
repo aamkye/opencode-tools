@@ -4,12 +4,13 @@ import test from "node:test"
 const { createSesTokensSource } = await import("../.tmp-test/ses-tokens-source.mjs")
 
 const eventTypes = [
-  "message.updated",
-  "message.removed",
-  "session.created",
-  "session.updated",
-  "session.deleted",
-  "tui.session.select",
+  "session.usage.updated", "session.step.ended", "session.step.failed",
+  "session.created", "session.forked", "session.deleted", "session.renamed",
+  "session.agent.selected", "session.model.selected",
+  "session.execution.started", "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
+  "session.status", "session.idle",
+  "session.revert.staged", "session.revert.cleared", "session.revert.committed",
+  "session.compaction.ended", "session.compaction.failed", "server.connected",
 ]
 
 function deferred() {
@@ -101,6 +102,23 @@ async function exhaustRetries(scheduler) {
   for (const delay of [2_000, 4_000, 8_000]) await scheduler.runNext(delay)
 }
 
+test("native usage and creation data refresh the selected tree", async () => {
+  let calls = 0
+  const { source, scheduler, events } = createHarness(async () => {
+    calls++
+    return snapshot("root", "child")
+  })
+  source.setSessionID("root")
+  await settle()
+  events.emit({ type: "session.usage.updated", data: { sessionID: "child", cost: 0, tokens: { input: 2, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } } })
+  assert.deepEqual(scheduler.pendingDelays(), [200])
+  await scheduler.runNext(200)
+  events.emit({ type: "session.created", data: { sessionID: "new", parentID: "child" } })
+  await scheduler.runNext(200)
+  assert.equal(calls, 3)
+  source.dispose()
+})
+
 test("loads a non-empty initial target immediately and skips an empty target", async () => {
   const complete = snapshot("root", "child")
   const calls = []
@@ -161,8 +179,8 @@ test("coalesces relevant message events into one 200 ms refresh", async () => {
   source.setSessionID("root")
   await settle()
 
-  events.emit({ type: "message.updated", properties: { sessionID: "child" } })
-  events.emit({ type: "message.removed", properties: { sessionID: "root" } })
+  events.emit({ type: "session.usage.updated", data: { sessionID: "child", cost: 0, tokens: {} } })
+  events.emit({ type: "session.step.ended", data: { sessionID: "root" } })
   assert.deepEqual(scheduler.pendingDelays(), [200])
   assert.deepEqual(calls, ["root"])
 
@@ -183,7 +201,7 @@ test("refreshes when a descendant changes after discovery but before initial pub
   })
 
   source.setSessionID("root")
-  events.emit({ type: "message.updated", properties: { sessionID: "child" } })
+  events.emit({ type: "session.usage.updated", data: { sessionID: "child", cost: 0, tokens: {} } })
   assert.deepEqual(scheduler.pendingDelays(), [200])
   await scheduler.runNext(200)
 
@@ -203,11 +221,9 @@ test("ignores message events outside the last complete subtree", async () => {
   source.setSessionID("root")
   await settle()
 
-  events.emit({ type: "message.updated", properties: { sessionID: "outside" } })
-  events.emit({ type: "message.removed", properties: { sessionID: "outside" } })
-  events.emit({ type: "session.created", properties: { sessionID: "new", info: { id: "new", parentID: "outside" } } })
-  events.emit({ type: "session.updated", properties: { sessionID: "outside", info: { id: "outside", parentID: "other" } } })
-  events.emit({ type: "session.deleted", properties: { sessionID: "outside", info: { id: "outside" } } })
+  for (const type of eventTypes.filter((type) => type !== "server.connected")) {
+    events.emit({ type, data: { sessionID: "outside", parentID: "other" } })
+  }
 
   assert.deepEqual(scheduler.pendingDelays(), [])
   assert.deepEqual(calls, ["root"])
@@ -215,7 +231,7 @@ test("ignores message events outside the last complete subtree", async () => {
   source.dispose()
 })
 
-test("refreshes for created updated and deleted descendant topology", async () => {
+test("refreshes for every native lifecycle event and descendant creation or fork", async () => {
   const complete = snapshot("root", "child")
   const calls = []
   const { events, scheduler, source } = createHarness(async (sessionID) => {
@@ -225,26 +241,21 @@ test("refreshes for created updated and deleted descendant topology", async () =
   source.setSessionID("root")
   await settle()
 
-  for (const event of [
-    { type: "session.created", properties: { sessionID: "outside", info: { id: "child", parentID: "other" } } },
-    { type: "session.created", properties: { sessionID: "root", info: { id: "new", parentID: "other" } } },
-    { type: "session.created", properties: { sessionID: "new", info: { id: "new", parentID: "child" } } },
-    { type: "session.updated", properties: { sessionID: "outside", info: { id: "child", parentID: "other" } } },
-    { type: "session.updated", properties: { sessionID: "root", info: { id: "outside", parentID: "other" } } },
-    { type: "session.updated", properties: { sessionID: "outside", info: { id: "outside", parentID: "child" } } },
-    { type: "session.deleted", properties: { sessionID: "child", info: { id: "child" } } },
-  ]) {
-    events.emit(event)
+  for (const type of eventTypes) {
+    const data = type === "session.created" || type === "session.forked"
+      ? { sessionID: "new", parentID: "child" }
+      : { sessionID: "child" }
+    events.emit({ type, data })
     assert.deepEqual(scheduler.pendingDelays(), [200])
     await scheduler.runNext(200)
   }
 
-  assert.equal(calls.length, 8)
+  assert.equal(calls.length, eventTypes.length + 1)
   assert.deepEqual(source.state(), { phase: "ready", sessionID: "root", snapshot: complete })
   source.dispose()
 })
 
-test("switches immediately for slot and non-empty select targets", async () => {
+test("switches immediately for view targets and ignores global select events", async () => {
   const root = snapshot("root")
   const slotResult = deferred()
   const selectResult = deferred()
@@ -261,11 +272,13 @@ test("switches immediately for slot and non-empty select targets", async () => {
   assert.deepEqual(source.state(), { phase: "loading", sessionID: "slot" })
   assert.deepEqual(calls, ["root", "slot"])
 
-  events.emit({ type: "tui.session.select", properties: { sessionID: "selected" } })
+  events.emit({ type: "tui.session.select", data: { sessionID: "other-tab" } })
+  assert.deepEqual(calls, ["root", "slot"])
+  source.setSessionID("selected")
   assert.deepEqual(source.state(), { phase: "loading", sessionID: "selected" })
   assert.deepEqual(calls, ["root", "slot", "selected"])
-  events.emit({ type: "tui.session.select", properties: { sessionID: "" } })
-  events.emit({ type: "tui.session.select", properties: { sessionID: "selected" } })
+  events.emit({ type: "tui.session.select", data: { sessionID: "" } })
+  source.setSessionID("selected")
   assert.deepEqual(calls, ["root", "slot", "selected"])
 
   slotResult.resolve(snapshot("slot"))
@@ -306,7 +319,7 @@ test("aborts superseded empty-target and disposed generations", async () => {
   assert.equal(contexts[0].signal.aborted, true)
   assert.equal(contexts[1].signal.aborted, false)
   contexts[0].onSessionIDs(["old", "leaked-child"])
-  events.emit({ type: "message.updated", properties: { sessionID: "leaked-child" } })
+  events.emit({ type: "session.usage.updated", data: { sessionID: "leaked-child" } })
   assert.deepEqual(scheduler.pendingDelays(), [], "obsolete topology cannot change event filtering")
 
   source.setSessionID("")
@@ -325,9 +338,9 @@ test("does not let an event-superseded request replace a newer snapshot", async 
   source.setSessionID("root")
   await settle()
 
-  events.emit({ type: "message.updated", properties: { sessionID: "child" } })
+  events.emit({ type: "session.usage.updated", data: { sessionID: "child" } })
   await scheduler.runNext(200)
-  events.emit({ type: "message.updated", properties: { sessionID: "root" } })
+  events.emit({ type: "session.usage.updated", data: { sessionID: "root" } })
   await scheduler.runNext(200)
 
   const newer = snapshot("root", "new-child")
@@ -369,7 +382,7 @@ test("retains a ready snapshot as stale after exhausted background retries", asy
   source.setSessionID("root")
   await settle()
 
-  events.emit({ type: "message.updated", properties: { sessionID: "child" } })
+  events.emit({ type: "session.usage.updated", data: { sessionID: "child" } })
   await scheduler.runNext(200)
   assert.deepEqual(source.state(), { phase: "ready", sessionID: "root", snapshot: complete })
   await exhaustRetries(scheduler)
@@ -389,12 +402,12 @@ test("recovers stale to ready with a later complete snapshot", async () => {
   })
   source.setSessionID("root")
   await settle()
-  events.emit({ type: "message.removed", properties: { sessionID: "child" } })
+  events.emit({ type: "session.revert.committed", data: { sessionID: "child" } })
   await scheduler.runNext(200)
   await exhaustRetries(scheduler)
   assert.deepEqual(source.state(), { phase: "stale", sessionID: "root", snapshot: first })
 
-  events.emit({ type: "session.created", properties: { sessionID: "new-child", info: { id: "new-child", parentID: "root" } } })
+  events.emit({ type: "session.created", data: { sessionID: "new-child", parentID: "root" } })
   await scheduler.runNext(200)
   assert.deepEqual(source.state(), { phase: "ready", sessionID: "root", snapshot: recovered })
   source.dispose()
@@ -411,8 +424,8 @@ test("disposal during retry clears timers unsubscribes events and blocks updates
   source.setSessionID("root")
   await settle()
   assert.deepEqual(scheduler.pendingDelays(), [2_000])
-  events.emit({ type: "message.updated", properties: { sessionID: "root" } })
-  assert.deepEqual(scheduler.pendingDelays(), [2_000, 200])
+  events.emit({ type: "session.usage.updated", data: { sessionID: "root" } })
+  assert.deepEqual(scheduler.pendingDelays(), [200])
 
   source.dispose()
   source.dispose()
@@ -423,9 +436,43 @@ test("disposal during retry clears timers unsubscribes events and blocks updates
   const stateAtDisposal = source.state()
   const notificationCount = notifications.length
   source.setSessionID("later")
-  events.emit({ type: "tui.session.select", properties: { sessionID: "later" } })
+  events.emit({ type: "tui.session.select", data: { sessionID: "later" } })
   await settle()
   assert.deepEqual(calls, ["root"])
   assert.equal(source.state(), stateAtDisposal)
   assert.equal(notifications.length, notificationCount)
+})
+
+test("accumulates targeted invalidations across superseded loads and recovers with a full refresh", async () => {
+  const contexts = []
+  const pending = deferred()
+  const complete = snapshot("root", "a", "b")
+  const { source, events, scheduler } = createHarness(async (_id, context) => {
+    contexts.push(context)
+    if (contexts.length === 2) return pending.promise
+    if (contexts.length === 4) throw new Error("offline")
+    return complete
+  })
+  source.setSessionID("root")
+  await settle()
+  events.emit({ type: "session.usage.updated", data: { sessionID: "a" } })
+  await scheduler.runNext(200)
+  assert.deepEqual(contexts[1].refresh.messages, ["a"])
+  assert.equal(contexts[1].previous, complete)
+  events.emit({ type: "session.compaction.ended", data: { sessionID: "b" } })
+  assert.equal(contexts[1].signal.aborted, true)
+  pending.resolve(snapshot("root", "obsolete"))
+  await settle()
+  assert.equal(source.state().snapshot, complete)
+  await scheduler.runNext(200)
+  assert.deepEqual(contexts[2].refresh.messages, ["a", "b"])
+  assert.deepEqual(contexts[2].refresh.metadata, ["b"])
+  events.emit({ type: "session.revert.committed", data: { sessionID: "a" } })
+  await scheduler.runNext(200)
+  await scheduler.runNext(2_000)
+  assert.equal(contexts[4].refresh, undefined)
+  events.emit({ type: "server.connected", data: {} })
+  await scheduler.runNext(200)
+  assert.equal(contexts[5].refresh, undefined)
+  source.dispose()
 })

@@ -1,25 +1,25 @@
-import { mkdir, readFile, rm } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { builtinModules } from "node:module"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { build } from "esbuild"
 import { transformAsync } from "@babel/core"
+import solidPreset from "babel-preset-solid"
+import tsPreset from "@babel/preset-typescript"
+import { mapBuilds } from "./build-concurrency.mjs"
 
-import { pluginManifest, validatePluginManifest } from "./plugin-manifest.mjs"
+import { pluginManifest, retiredPluginPaths, validatePluginManifest } from "./plugin-manifest.mjs"
 
 const projectRoot = dirname(fileURLToPath(import.meta.url))
-const distRoot = resolve(projectRoot, "dist")
 
 const hostDependencies = [
   "solid-js",
   "solid-js/*",
   "@opentui/*",
-  "@opencode-ai/plugin",
-  "@opencode-ai/plugin/*",
-  "@opencode-ai/sdk",
-  "@opencode-ai/sdk/*",
+  "@opencode/plugin/tui",
+  "@opencode/theme",
+  "@opencode/theme/*",
   "bun:*",
-  "better-sqlite3",
   ...builtinModules,
   ...builtinModules.filter((name) => !name.startsWith("node:")).map((name) => `node:${name}`),
 ]
@@ -30,18 +30,15 @@ const common = {
   external: hostDependencies,
   format: "esm",
   metafile: true,
-  minify: true,
+  // OpenCode 2.0.16's runtime import rewrite requires whitespace after `from`.
+  minifyIdentifiers: true,
+  minifySyntax: true,
   platform: "node",
   target: "es2022",
 }
 
 async function transformSolid(code, filename) {
-  const solidPreset = (await import("babel-preset-solid")).default
-  const tsPreset = (await import("@babel/preset-typescript")).default
-  const presets = [[solidPreset, { moduleName: "@opentui/solid", generate: "universal" }]]
-  if (/\.[cm]?tsx?$/.test(filename)) {
-    presets.push([tsPreset])
-  }
+  const presets = [[solidPreset, { moduleName: "@opentui/solid", generate: "universal" }], [tsPreset]]
   const result = await transformAsync(code, { filename, configFile: false, babelrc: false, presets })
   return result?.code ?? code
 }
@@ -50,7 +47,7 @@ function solidTransformPlugin() {
   return {
     name: "solid-jsx-transform",
     setup(buildApi) {
-      buildApi.onLoad({ filter: /\.[cm]?tsx?$/ }, async (args) => {
+      buildApi.onLoad({ filter: /\.tsx$/ }, async (args) => {
         const code = await readFile(args.path, "utf8")
         const transformed = await transformSolid(code, args.path)
         return { contents: transformed, loader: "js" }
@@ -59,55 +56,57 @@ function solidTransformPlugin() {
   }
 }
 
-function sharedImport(path) {
-  return {
-    name: "external-shared-artifact",
-    setup(buildApi) {
-      buildApi.onResolve({ filter: /(?:^|\/)shared\/opencode-tools-shared(?:\.js)?$/ }, () => ({
-        external: true,
-        path,
-      }))
-    },
-  }
+async function writePackage(distRoot, name, paired) {
+  const packageRoot = resolve(distRoot, name)
+  await mkdir(packageRoot, { recursive: true })
+  await writeFile(resolve(packageRoot, "package.json"), `${JSON.stringify({
+    name, type: "module", exports: { ".": "./index.js", ...(paired ? { "./tui": "./tui.js" } : {}) },
+  }, null, 2)}\n`)
+  return packageRoot
 }
 
-function hostRuntimeImports() {
-  return {
-    name: "opencode-host-runtime",
-    setup(buildApi) {
-      buildApi.onResolve({ filter: /^(?:solid-js|@opentui\/solid|@opentui\/solid\/jsx-runtime)$/ }, (args) => ({
-        external: true,
-        path: `opentui:runtime-module:${encodeURIComponent(args.path)}`,
-      }))
-    },
-  }
-}
-
-export async function buildPlugins({ logLevel = "info", manifest = pluginManifest } = {}) {
+export async function buildPlugins({
+  logLevel = "info",
+  manifest = pluginManifest,
+  distRoot = resolve(projectRoot, "dist"),
+} = {}) {
   validatePluginManifest(manifest)
   await mkdir(distRoot, { recursive: true })
   await rm(resolve(distRoot, "plugins/opencode-tools-tokens.js"), { force: true })
+  await rm(resolve(distRoot, "opencode-tools-shared.js"), { force: true })
+  await Promise.all(retiredPluginPaths.map((path) => rm(resolve(distRoot, path), { recursive: true, force: true })))
+  await Promise.all(manifest.map((entry) => rm(resolve(distRoot, `opencode-tools-${entry.key}.js`), { force: true })))
 
-  const shared = await build({
-    ...common,
-    entryPoints: ["shared/opencode-tools-shared.ts"],
-    logLevel,
-    outfile: resolve(distRoot, "opencode-tools-shared.js"),
-    plugins: [solidTransformPlugin(), hostRuntimeImports()],
-  })
-
-  const features = {}
-  for (const entry of manifest) {
-    features[entry.key] = await build({
+  const featureResults = await mapBuilds(manifest, async (entry) => {
+    const packageRoot = await writePackage(distRoot, `opencode-tools-${entry.key}`, true)
+    // The server does not inject bare plugin imports for deployed local files.
+    // Bundle the published, stateless define helper; keep CLI UI runtimes external.
+    await build({
+      ...common,
+      stdin: { contents: `import * as Plugin from "@opencode/plugin/promise/plugin"\nexport default Plugin.define({ id: ${JSON.stringify(entry.id)}, setup() {} })`, resolveDir: projectRoot },
+      logLevel,
+      outfile: resolve(packageRoot, "index.js"),
+    })
+    const result = await build({
       ...common,
       entryPoints: [entry.source],
       logLevel,
       outfile: resolve(distRoot, entry.outfile),
-      plugins: [solidTransformPlugin(), hostRuntimeImports(), sharedImport("./opencode-tools-shared.js")],
+      plugins: [solidTransformPlugin()],
     })
-  }
+    return [entry.key, result]
+  })
+  const features = Object.fromEntries(featureResults)
 
-  return { shared, features }
+  const quotaRoot = await writePackage(distRoot, "opencode-tools-quota-service", false)
+  const quotaService = await build({
+    ...common,
+    entryPoints: ["quota-service.ts"],
+    logLevel,
+    outfile: resolve(quotaRoot, "index.js"),
+  })
+
+  return { features, quotaService }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

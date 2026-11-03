@@ -1,36 +1,37 @@
-import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
 
 import {
   CompactPanel,
   CompactStatusRow,
   createMcpPanelModel,
   defineTuiPlugin,
+  panelTheme,
   pluginDescriptor,
   resolveChipOption,
   resolveCollapseDefault,
   StatusChip,
-  type PanelTheme,
 } from "../shared/opencode-tools-shared.js"
 
 const descriptor = pluginDescriptor("mcp")
-const plugin = defineTuiPlugin(descriptor, (_context, api, options) => {
-  const defaultCollapsed = resolveCollapseDefault(options, false).collapsed
-  const chipEnabled = resolveChipOption(options, true).enabled
-  const [sessionID, setSessionID] = createSignal("")
+const plugin = defineTuiPlugin(descriptor, (scope, api) => {
+  const defaultCollapsed = resolveCollapseDefault(api.options, false).collapsed
+  const chipEnabled = resolveChipOption(api.options, true).enabled
+  const location = () => api.location ?? api.data.location.default()
+  const theme = () => panelTheme(api)
 
-  function McpChip(props: { theme: () => PanelTheme }) {
-    const model = createMemo(() => createMcpPanelModel(api.state.mcp()))
+  function McpChip() {
+    const model = createMemo(() => createMcpPanelModel(api.data.location.mcp.server.list(location()) ?? []))
     return (
       <Show when={model().total > 0}>
-        <StatusChip label="MCP" segments={model().summary} theme={props.theme} />
+        <StatusChip label="MCP" segments={model().summary} theme={theme} />
       </Show>
     )
   }
 
-  function McpPanel() {
+  function McpPanel(props: { sessionID: string }) {
     const [collapsed, setCollapsed] = createSignal(defaultCollapsed)
     const [pendingExpand, setPendingExpand] = createSignal(false)
-    const model = createMemo(() => createMcpPanelModel(api.state.mcp()))
+    const model = createMemo(() => createMcpPanelModel(api.data.location.mcp.server.list(location()) ?? []))
     const isCollapsed = () => model().total === 0 || collapsed()
     const summary = () => {
       const panel = model()
@@ -38,7 +39,7 @@ const plugin = defineTuiPlugin(descriptor, (_context, api, options) => {
     }
 
     createEffect(() => {
-      sessionID()
+      props.sessionID
       setCollapsed(defaultCollapsed)
       setPendingExpand(false)
     })
@@ -58,14 +59,14 @@ const plugin = defineTuiPlugin(descriptor, (_context, api, options) => {
       setCollapsed((current) => !current)
     }
 
-    const render = () => (
+    return (
       <CompactPanel
         title="MCP"
         collapsed={isCollapsed()}
         summary={summary()}
         onToggle={toggle}
         footerDivider={!isCollapsed() && model().total > 0}
-        theme={() => api.theme.current}
+        theme={theme}
       >
         <For each={model().rows}>
           {(row) => (
@@ -73,28 +74,24 @@ const plugin = defineTuiPlugin(descriptor, (_context, api, options) => {
               name={row.name}
               label={row.label}
               status={row.status}
-              theme={() => api.theme.current}
+              theme={theme}
             />
           )}
         </For>
       </CompactPanel>
     )
-
-    return render as unknown as JSX.Element
   }
 
-  api.slots.register({
-    order: descriptor.slotOrder,
-    slots: {
-      sidebar_content(_ctx, props) {
-        setSessionID(props?.session_id ?? "")
-        return <McpPanel />
-      },
-      session_prompt_right() {
-        return chipEnabled ? <McpChip theme={() => api.theme.current} /> : null
-      },
-    },
-  })
+  scope.onCleanup(api.ui.slot({
+    append: "sidebar.content",
+    render: (props) => <McpPanel sessionID={props.sessionID} />,
+  }))
+  if (chipEnabled) {
+    scope.onCleanup(api.ui.slot({
+      append: "prompt.footer.status",
+      render: () => <McpChip />,
+    }))
+  }
 })
 
 export default plugin

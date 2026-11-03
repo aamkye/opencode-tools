@@ -2,11 +2,8 @@ import { createEffect, createSignal, onCleanup } from "solid-js"
 
 import { FETCH_TIMEOUT_MS, STALE_MAX_MS, TICK_MS, providerRefreshInterval, unref } from "./_shared.js"
 
-export type QuotaEngineFetchResult<TData> =
-  | { kind: "success"; data: TData }
-  | { kind: "transient-failure" }
-  | { kind: "authentication-required" }
-  | { kind: "invalid-response" }
+import type { QuotaFetchResult } from "../../lib/quota/types.js"
+export type QuotaEngineFetchResult<TData> = QuotaFetchResult<TData>
 
 export type PublishedQuota<TData> = { data: TData; generation: number }
 

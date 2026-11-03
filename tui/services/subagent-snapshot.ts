@@ -1,11 +1,13 @@
-import type { Message, Session, SessionStatus } from "@opencode-ai/sdk/v2"
+import type { SessionInfo, SessionMessageInfo } from "@opencode/client"
+import type { Plugin } from "@opencode/plugin/tui"
 
 import { indexSessionsByParent } from "./session-tree-snapshot.js"
+import type { SnapshotRefresh } from "./snapshot-refresh.js"
 
 export type SubagentChildSnapshot = {
-  session: Pick<Session, "id" | "parentID" | "title" | "time">
-  status: SessionStatus | undefined
-  messages: readonly Message[]
+  session: Pick<SessionInfo, "id" | "parentID" | "title" | "time" | "outcome" | "agent" | "model">
+  status: ReturnType<Plugin.Context["data"]["session"]["status"]> | undefined
+  messages: readonly SessionMessageInfo[]
 }
 
 export type SubagentSnapshot = {
@@ -17,6 +19,8 @@ export type SubagentSnapshot = {
 export type SubagentSnapshotLoadContext = {
   signal: AbortSignal
   onChildIDs(childIDs: readonly string[]): void
+  previous?: SubagentSnapshot
+  refresh?: SnapshotRefresh
 }
 
 export type SubagentSnapshotLoader = (
@@ -25,9 +29,10 @@ export type SubagentSnapshotLoader = (
 ) => Promise<SubagentSnapshot>
 
 export type CreateSubagentSnapshotLoaderOptions = {
-  listSessions(): Promise<readonly Pick<Session, "id" | "parentID" | "title" | "time">[]>
-  sessionStatus(sessionID: string): SessionStatus | undefined
-  listMessages(sessionID: string): Promise<readonly Message[]>
+  listSessions(signal: AbortSignal): Promise<readonly SubagentChildSnapshot["session"][]>
+  getSession(sessionID: string, signal: AbortSignal): Promise<SubagentChildSnapshot["session"]>
+  sessionStatus(sessionID: string): SubagentChildSnapshot["status"]
+  listMessages(sessionID: string, signal: AbortSignal): Promise<readonly SessionMessageInfo[]>
   concurrency?: number
 }
 
@@ -115,12 +120,24 @@ export function createSubagentSnapshotLoader(
 
   return async (parentID, context) => {
     throwIfAborted(context.signal)
-    const sessions = await options.listSessions()
-    throwIfAborted(context.signal)
-    const children = ([
-      ...(indexSessionsByParent(sessions).get(parentID) ?? []),
-    ] as SubagentChildSnapshot["session"][])
-      .sort((left, right) => right.time.created - left.time.created || left.id.localeCompare(right.id))
+    const previous = context.previous?.parentID === parentID && context.refresh ? context.previous : undefined
+    const refreshTopology = !previous || context.refresh!.topology
+    const cached = new Map(previous?.children.map((child) => [child.session.id, child]))
+    let children: SubagentChildSnapshot["session"][]
+    if (refreshTopology) {
+      const sessions = await options.listSessions(context.signal)
+      throwIfAborted(context.signal)
+      if (!sessions.some((session) => session.id === parentID)) {
+        await options.getSession(parentID, context.signal)
+        throwIfAborted(context.signal)
+      }
+      children = [...(indexSessionsByParent(sessions).get(parentID) ?? [])] as SubagentChildSnapshot["session"][]
+    } else {
+      children = previous.children.map(({ session }) => session)
+    }
+    children.sort((left, right) => right.time.created - left.time.created || left.id.localeCompare(right.id))
+    const dirtyMessages = new Set(context.refresh?.messages)
+    const dirtyMetadata = new Set(context.refresh?.metadata)
     const childIDs = children.map(({ id }) => id)
     context.onChildIDs(childIDs)
     throwIfAborted(context.signal)
@@ -140,12 +157,17 @@ export function createSubagentSnapshotLoader(
         cursor += 1
         const child = children[index]
         try {
+          const session = !refreshTopology && dirtyMetadata.has(child.id)
+            ? await limitMessageRequest(signal, () => options.getSession(child.id, signal))
+            : child
+          throwIfAborted(signal)
           const status = options.sessionStatus(child.id)
-          const messages = await limitMessageRequest(
+          const cachedMessages = cached.get(child.id)?.messages
+          const messages = cachedMessages && !dirtyMessages.has(child.id) ? cachedMessages : await limitMessageRequest(
             signal,
-            () => options.listMessages(child.id),
+            () => options.listMessages(child.id, signal),
           )
-          completedResults[index] = { session: child, status, messages }
+          completedResults[index] = { session, status, messages }
         } catch (error) {
           if (!failed && !context.signal.aborted) {
             failed = true

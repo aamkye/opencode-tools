@@ -1,11 +1,11 @@
-import type { TuiPluginApi, TuiPluginOptions } from "@opencode-ai/plugin/tui"
+import type { Plugin } from "@opencode/plugin/tui"
+import type { ModelRef, SessionMessageInfo } from "@opencode/client"
 import { createEffect, createMemo, createRoot, createSignal, onCleanup, type Accessor } from "solid-js"
 
-import { normalizeOpenCodeGoConfig, type OpenCodeGoConfig, type OpenCodeGoOptions } from "../providers/opencode-go.js"
+import { normalizeOpenCodeGoConfig, type OpenCodeGoConfig, type OpenCodeGoOptions } from "../../lib/quota/opencode-go.js"
 import type { QuotaProviderAdapter } from "../providers/types.js"
 import { sortByOrderThenId } from "../presentation/types.js"
 import type { PanelItem, PanelModel, PanelStatus } from "../presentation/types.js"
-import { pluginDescriptor } from "../runtime/manifest.js"
 
 export type PercentageMode = "remaining" | "used"
 export type SortDirection = "desc" | "asc"
@@ -60,13 +60,6 @@ export type NormalizedQuotaOptions = NormalizedCompositionOptions & {
   openCodeGoHideInactive?: boolean
 }
 
-type SessionModelMessage = {
-  role?: string
-  model?: {
-    providerID?: string
-  }
-}
-
 export type QuotaSelection =
   | { kind: "supported"; providerID: string }
   | { kind: "unsupported"; providerID: string }
@@ -91,6 +84,7 @@ const DEFAULT_OPTIONS: NormalizedQuotaOptions = {
 }
 
 const ADAPTER_ID_BY_PROVIDER_ID: Record<string, string> = {
+  zai: "zai",
   "zai-coding-plan": "zai",
   openai: "openai",
   codex: "openai",
@@ -134,7 +128,7 @@ function compositionOptions(options?: QuotaCompositionOptions): NormalizedCompos
 const hideInactive = (value: unknown): boolean | undefined =>
   typeof value === "boolean" ? value : undefined
 
-export function normalizeQuotaOptions(value?: TuiPluginOptions): NormalizedQuotaOptions {
+export function normalizeQuotaOptions(value?: Plugin.Context["options"]): NormalizedQuotaOptions {
   const input = value && typeof value === "object" ? value as QuotaPluginOptions : {}
   const quota = input.quota && typeof input.quota === "object" ? input.quota : undefined
   const otherProviders = quota?.otherProviders && typeof quota.otherProviders === "object"
@@ -357,7 +351,7 @@ export function composeQuotaPanel(
 
   return {
     id: "quota",
-    order: pluginDescriptor("quota").slotOrder ?? 0,
+    order: 0,
     title: "Quota",
     collapsedSummary: selection.kind === "unsupported"
       ? {
@@ -405,54 +399,59 @@ export function selectedQuotaProviderID(
 }
 
 export function selectedSessionQuotaProviderID(
-  messages: readonly SessionModelMessage[],
+  messages: readonly SessionMessageInfo[],
   providers: readonly QuotaProviderAdapter[],
   fallback: QuotaSelection,
+  model?: ModelRef,
 ): QuotaSelection {
+  if (model) return selectionForProvider(model.providerID, providers)
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
-    if (message?.role !== "user" || !message.model?.providerID) continue
-    const provider = resolveSupportedProvider(message.model.providerID, providers)
-    if (provider) return { kind: "supported", providerID: provider.id }
-    const adapterID = ADAPTER_ID_BY_PROVIDER_ID[message.model.providerID] ?? message.model.providerID
-    return providers.some((candidate) => candidate.id === adapterID)
-      ? { kind: "none" }
-      : { kind: "unsupported", providerID: message.model.providerID }
+    if (message?.type !== "assistant" || !message.model?.providerID) continue
+    return selectionForProvider(message.model.providerID, providers)
   }
   return fallback
 }
 
+function selectionForProvider(providerID: string, providers: readonly QuotaProviderAdapter[]): QuotaSelection {
+  const provider = resolveSupportedProvider(providerID, providers)
+  if (provider) return { kind: "supported", providerID: provider.id }
+  const adapterID = ADAPTER_ID_BY_PROVIDER_ID[providerID] ?? providerID
+  return providers.some((candidate) => candidate.id === adapterID)
+    ? { kind: "none" }
+    : { kind: "unsupported", providerID }
+}
+
 export function createQuotaSelection(
-  api: TuiPluginApi,
-  providers: readonly QuotaProviderAdapter[],
-): { selectedProviderID: Accessor<QuotaSelection>; setSessionID(sessionID: string): void } {
-  let dispose: () => void = () => undefined
-  const selection = createRoot((rootDispose) => {
-    dispose = rootDispose
+  api: Plugin.Context,
+  providers: Accessor<readonly QuotaProviderAdapter[]>,
+): { selectedProviderID: Accessor<QuotaSelection>; setSessionID(sessionID: string): void; dispose(): void } {
+  return createRoot((dispose) => {
     const [sessionID, setActiveSessionID] = createSignal("")
     const [eventSelection, setEventSelection] = createSignal<{
       sessionID: string
       providerID?: string
     }>()
-    onCleanup(api.event.on("message.updated", (event) => {
-      if (event.properties.info.sessionID !== sessionID() || event.properties.info.role !== "user") return
+    onCleanup(api.data.on("session.model.selected", (event) => {
+      if (event.data.sessionID !== sessionID()) return
       setEventSelection({
-        sessionID: event.properties.info.sessionID,
-        providerID: event.properties.info.model?.providerID,
+        sessionID: event.data.sessionID,
+        providerID: event.data.model.providerID,
       })
     }))
     const selectedProviderID = createMemo(() => {
-      const fallbackID = selectedQuotaProviderID(api.state.provider, providers)
+      const adapters = providers()
+      const location = api.location ?? api.data.location.default()
+      const fallbackID = selectedQuotaProviderID(api.data.location.provider.list(location) ?? [], adapters)
       const id = sessionID()
       if (!id) return fallbackID
       const submitted = eventSelection()
-      if (submitted?.sessionID === id) {
-        return selectedSessionQuotaProviderID([
-          { role: "user", model: { providerID: submitted.providerID } },
-        ], providers, fallbackID)
+      if (submitted?.sessionID === id && submitted.providerID) {
+        return selectionForProvider(submitted.providerID, adapters)
       }
       try {
-        return selectedSessionQuotaProviderID(api.state.session.messages(id), providers, fallbackID)
+        const model = api.data.session.get(id)?.model
+        return selectedSessionQuotaProviderID(model ? [] : api.data.session.message.list(id), adapters, fallbackID, model)
       } catch {
         return fallbackID
       }
@@ -464,11 +463,12 @@ export function createQuotaSelection(
       const selected = selectedProviderID()
       if (selected.kind !== "supported" || selected.providerID === refreshedProviderID) return
       refreshedProviderID = selected.providerID
-      void providers.find((provider) => provider.id === selected.providerID)?.refresh()
+      void providers().find((provider) => provider.id === selected.providerID)?.refresh()
     })
 
     return {
       selectedProviderID,
+      dispose,
       setSessionID(nextSessionID: string) {
         if (nextSessionID === sessionID()) return
         setActiveSessionID(nextSessionID)
@@ -476,16 +476,4 @@ export function createQuotaSelection(
       },
     }
   })
-
-  try {
-    const unregister = api.lifecycle.onDispose(dispose)
-    if (api.lifecycle.signal.aborted) {
-      unregister()
-      dispose()
-    }
-  } catch (error) {
-    dispose()
-    throw error
-  }
-  return selection
 }

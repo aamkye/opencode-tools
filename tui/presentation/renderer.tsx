@@ -1,9 +1,9 @@
-import { For, Show, createSignal, onCleanup, type Accessor, type JSX } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, type Accessor, type JSX } from "solid-js"
 
 import { CompactPanel, type PanelTheme } from "./compact-panel.js"
 import { formatBytes, formatCount, formatCurrency, formatDuration, formatPercent, formatTimer, truncateText } from "./format.js"
 import { allocateCompactTable, allocateHeader, allocateProgressRow, type CompactTableAllocation, type HeaderAllocation, type ProgressRowAllocation } from "./layout.js"
-import { sortByOrderThenId, type DisplayValue, type PanelAlignment, type PanelGroup, type PanelItem, type PanelModel, type PanelStatus, type PanelTextSegment } from "./types.js"
+import { sortByOrderThenId, type DisplayValue, type PanelAlignment, type PanelGroup, type PanelItem, type PanelModel, type PanelStatus, type PanelTextSegment, type TimerState } from "./types.js"
 
 type NormalizedHeader = {
   id: string
@@ -39,7 +39,7 @@ type NormalizedItem =
     }
   | { id: string; kind: "text"; text: string; align: PanelAlignment; status?: PanelStatus }
   | { id: string; kind: "progress"; label: string; percent: string; allocation: ProgressRowAllocation; status?: PanelStatus }
-  | { id: string; kind: "timer"; text: string; detail?: string; status?: PanelStatus }
+  | { id: string; kind: "timer"; text: string; state: TimerState; epoch?: number; detail?: string; status?: PanelStatus }
   | { id: string; kind: "quantity"; label: string; value: string; align: PanelAlignment; status?: PanelStatus }
   | {
       id: string
@@ -134,6 +134,8 @@ function normalizeItem(item: PanelItem, availableCells: number, now: number): No
         id: item.id,
         kind: item.kind,
         text: formatTimer(item, now),
+        state: item.state,
+        epoch: item.epoch,
         detail: item.detail,
         status: item.status,
       }
@@ -234,7 +236,7 @@ function GroupDivider(props: { theme: Accessor<PanelTheme> }) {
   )
 }
 
-function MountedItem(props: { item: NormalizedItem; theme: Accessor<PanelTheme> }) {
+function MountedItem(props: { item: NormalizedItem; theme: Accessor<PanelTheme>; now: Accessor<number> }) {
   const color = (status?: PanelStatus) => (status ? props.theme()[status] : undefined)
   const metadataColor = (status?: PanelStatus) => (status ? props.theme()[status] : props.theme().textMuted)
 
@@ -279,12 +281,14 @@ function MountedItem(props: { item: NormalizedItem; theme: Accessor<PanelTheme> 
         </box>
       )
     }
-    case "timer":
+    case "timer": {
+      const item = props.item
+      const text = createMemo(() => formatTimer(item, item.state === "countdown" ? props.now() : undefined))
       return (
         <box flexDirection="column">
           <box flexDirection="row" width="100%">
             <text width={3}>   </text>
-            <text fg={metadataColor(props.item.status)}>{props.item.text}</text>
+            <text fg={metadataColor(props.item.status)}>{text()}</text>
           </box>
           <Show when={props.item.detail}>
             <box flexDirection="row" width="100%">
@@ -294,6 +298,7 @@ function MountedItem(props: { item: NormalizedItem; theme: Accessor<PanelTheme> 
           </Show>
         </box>
       )
+    }
     case "table": {
       const item = props.item
       const rows: { id: string; cells: { text: string; status?: PanelStatus }[] }[] = [
@@ -355,15 +360,25 @@ export function PanelRenderer(props: { model: Accessor<PanelModel>; theme: Acces
     return next
   }
   const [now, setNow] = createSignal(Date.now())
-  const interval = setInterval(() => setNow(Date.now()), 1_000)
-  onCleanup(() => clearInterval(interval))
 
   const toggle = (id: string) => {
     setCollapsed((current) => toggleCollapsed(current, id))
   }
 
-  const normalized = () => normalizePanelModel(props.model(), { now: now() })
+  const normalized = createMemo(() => normalizePanelModel(props.model()))
   const panelCollapsed = () => currentCollapsed().has(`panel:${props.model().id}`)
+  const visibleTimers = createMemo(() => panelCollapsed() ? [] : normalized().groups
+    .filter((group) => !group.header?.collapsible || !currentCollapsed().has(`group:${group.id}`))
+    .flatMap((group) => group.items.filter((item) => item.kind === "timer" && item.state === "countdown")))
+  // Reopening a disclosure must show current time even after a long hidden period.
+  createEffect(() => { visibleTimers(); setNow(Date.now()) })
+  const ticking = createMemo(() => visibleTimers().some((item) =>
+    item.kind === "timer" && typeof item.epoch === "number" && Number.isFinite(item.epoch) && item.epoch > now()))
+  createEffect(() => {
+    if (!ticking()) return
+    const interval = setInterval(() => setNow(Date.now()), 1_000)
+    onCleanup(() => clearInterval(interval))
+  })
 
   const render = () => (
     <CompactPanel
@@ -389,7 +404,7 @@ export function PanelRenderer(props: { model: Accessor<PanelModel>; theme: Acces
                 )}
               </Show>
               <Show when={!groupCollapsed()}>
-                <For each={group.items}>{(item) => <MountedItem item={item} theme={props.theme} />}</For>
+                <For each={group.items}>{(item) => <MountedItem item={item} theme={props.theme} now={now} />}</For>
               </Show>
               <Show when={!isLastGroup()}>
                 <GroupDivider theme={props.theme} />

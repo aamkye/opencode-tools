@@ -1,6 +1,9 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import type { JSX } from "solid-js"
+import { unwrap } from "solid-js/store"
+import type { Plugin } from "@opencode/plugin/tui"
 import stringWidth from "string-width"
+import { createSessionSource } from "../lib/session-source.js"
 
 import {
   allocateSubagentEntryRow,
@@ -8,7 +11,10 @@ import {
   createSubagentPanelModel,
   createSubagentSnapshotLoader,
   createSubagentSource,
+  createSessionSourcePool,
+  subagentEntryDuration,
   defineTuiPlugin,
+  panelTheme,
   PANEL_MAX_CELLS,
   pluginDescriptor,
   resolveChipOption,
@@ -19,18 +25,13 @@ import {
   type RetainedFailures,
   type SubagentEntry,
   type SubagentPanelModel,
-  type SubagentSource,
-  type SubagentSourceDependencies,
   type SubagentSourceState,
+  type TuiFeatureContext,
 } from "../shared/opencode-tools-shared.js"
 
 const descriptor = pluginDescriptor("subagent")
 const FAILURE_KEY = "aamkye.opencode-tools-subagent.failures"
-export const subagentRuntimeTestKey = Symbol("subagent-runtime-test")
-
-type SubagentSourceFactory = (dependencies: SubagentSourceDependencies) => SubagentSource
 type SubagentRuntime = {
-  createSource: SubagentSourceFactory
   now(): number
   setTimer(callback: () => void, delayMs: number): unknown
   clearTimer(timer: unknown): void
@@ -38,27 +39,12 @@ type SubagentRuntime = {
   clearInterval(interval: unknown): void
 }
 
-function runtime(meta: unknown): SubagentRuntime {
-  const defaults: SubagentRuntime = {
-    createSource: (dependencies) => createSubagentSource(dependencies),
-    now: () => Date.now(),
-    setTimer: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
-    clearTimer: (timer) => globalThis.clearTimeout(timer as ReturnType<typeof globalThis.setTimeout>),
-    setInterval: (callback, delayMs) => globalThis.setInterval(callback, delayMs),
-    clearInterval: (interval) => globalThis.clearInterval(interval as ReturnType<typeof globalThis.setInterval>),
-  }
-  if (typeof meta !== "object" || meta === null) return defaults
-  const candidate = (meta as Record<PropertyKey, unknown>)[subagentRuntimeTestKey]
-  if (typeof candidate !== "object" || candidate === null) return defaults
-  const injected = candidate as Partial<SubagentRuntime>
-  return {
-    createSource: typeof injected.createSource === "function" ? injected.createSource : defaults.createSource,
-    now: typeof injected.now === "function" ? injected.now : defaults.now,
-    setTimer: typeof injected.setTimer === "function" ? injected.setTimer : defaults.setTimer,
-    clearTimer: typeof injected.clearTimer === "function" ? injected.clearTimer : defaults.clearTimer,
-    setInterval: typeof injected.setInterval === "function" ? injected.setInterval : defaults.setInterval,
-    clearInterval: typeof injected.clearInterval === "function" ? injected.clearInterval : defaults.clearInterval,
-  }
+const runtime: SubagentRuntime = {
+  now: () => Date.now(),
+  setTimer: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+  clearTimer: (timer) => globalThis.clearTimeout(timer as ReturnType<typeof globalThis.setTimeout>),
+  setInterval: (callback, delayMs) => globalThis.setInterval(callback, delayMs),
+  clearInterval: (interval) => globalThis.clearInterval(interval as ReturnType<typeof globalThis.setInterval>),
 }
 
 function statusRole(status: SubagentEntry["status"]): PanelStatus {
@@ -142,12 +128,16 @@ function DetailRow(props: {
 
 function SubagentRow(props: {
   entry: SubagentEntry
+  now(): number
   expanded: boolean
   onToggle(): void
   onOpenSession(): void
   theme: () => PanelTheme
 }) {
   const role = () => statusRole(props.entry.status)
+  const duration = createMemo(() => props.entry.status === "running"
+    ? subagentEntryDuration(props.entry, props.now())
+    : props.entry.duration)
   const allocation = () => allocateSubagentEntryRow(PANEL_MAX_CELLS, 7)
   return (
     <box flexDirection="column" width="100%" overflow="hidden">
@@ -169,14 +159,14 @@ function SubagentRow(props: {
         </Show>
         <Show when={!props.expanded}>
           <box width={allocation().duration} flexShrink={0} justifyContent="flex-end" flexDirection="row">
-            <text wrapMode="none" fg={props.theme()[role()]}>{props.entry.duration}</text>
+            <text wrapMode="none" fg={props.theme()[role()]}>{duration()}</text>
           </box>
         </Show>
       </box>
       <Show when={props.expanded}>
         <DetailRow label="agent:" value={props.entry.agent} theme={props.theme} />
         <DetailRow label="status:" value={props.entry.status} status={role()} theme={props.theme} />
-        <DetailRow label="time:" value={props.entry.duration} status={role()} theme={props.theme} />
+        <DetailRow label="time:" value={duration()} status={role()} theme={props.theme} />
         <DetailRow label="model:" value={props.entry.model} theme={props.theme} />
         <box flexDirection="row" width="100%" overflow="hidden" onMouseDown={props.onOpenSession}>
           <text width={2} flexShrink={0}>{"  "}</text>
@@ -187,48 +177,76 @@ function SubagentRow(props: {
   )
 }
 
-const plugin = defineTuiPlugin(descriptor, (context, api, options, meta) => {
-  const collapseDefaults = resolveCollapseDefault(options, true)
-  const chipEnabled = resolveChipOption(options, true).enabled
-  const directory = api.state.path.directory
-  const injected = runtime(meta)
+export function setupSubagent(scope: TuiFeatureContext, api: Plugin.Context, injected = runtime) {
+  const collapseDefaults = resolveCollapseDefault(api.options, true)
+  const chipEnabled = resolveChipOption(api.options, true).enabled
+  const theme = () => panelTheme(api)
+  const sessions = createSessionSource(api.client)
+  const [stored, updateStored] = api.storage.store<{ failures: RetainedFailures }>(FAILURE_KEY, {
+    initial: { failures: {} },
+  })
+  const pendingMutations: Array<(failures: RetainedFailures) => void> = []
+  const loadFailures = () => {
+    const failures = structuredClone(unwrap(stored.failures))
+    for (const mutation of pendingMutations) mutation(failures)
+    return failures
+  }
+  let writes = Promise.resolve()
+  const saveFailures = (mutation: (failures: RetainedFailures) => void) => {
+    // Views share pending evidence even if storage defers or rejects a write.
+    pendingMutations.push(mutation)
+    const write = writes.then(async () => {
+      const mutations = pendingMutations.slice()
+      if (mutations.length === 0) return
+      await updateStored((draft) => {
+        for (const mutation of mutations) mutation(draft.failures)
+      })
+      pendingMutations.splice(0, mutations.length)
+    })
+    writes = write.catch(() => {})
+    return write
+  }
+  // All views use the same four message-request slots.
   const loadSnapshot = createSubagentSnapshotLoader({
-    async listSessions() {
-      const result = await api.client.session.list({ directory })
-      if (result.error !== undefined || !result.data) {
-        throw result.error ?? new Error("session data unavailable")
-      }
-      return result.data
-    },
-    sessionStatus: (sessionID) => api.state.session.status(sessionID),
-    async listMessages(sessionID) {
-      const result = await api.client.session.messages({ sessionID, directory })
-      if (result.error !== undefined || !result.data) {
-        throw result.error ?? new Error("session data unavailable")
-      }
-      return result.data.map((record) => record.info)
-    },
+    listSessions: (signal) => sessions.listSessions({}, signal),
+    getSession: (sessionID, signal) => sessions.getSession(sessionID, signal),
+    sessionStatus: (sessionID) => api.data.session.status(sessionID),
+    listMessages: (sessionID, signal) => sessions.listMessages(sessionID, signal),
   })
-  const source = injected.createSource({
-    loadSnapshot,
-    onEvent: (type, handler) => api.event.on(type, handler as never),
-    loadFailures: () => api.kv.get<RetainedFailures>(FAILURE_KEY, {}),
-    saveFailures: (value) => api.kv.set(FAILURE_KEY, value),
-    now: injected.now,
-    setTimer: injected.setTimer,
-    clearTimer: injected.clearTimer,
+  const sources = createSessionSourcePool((parentID) => {
+    const source = createSubagentSource({
+      loadSnapshot, onEvent: api.data.on,
+      loadFailures, saveFailures,
+      now: injected.now, setTimer: injected.setTimer, clearTimer: injected.clearTimer,
+    })
+    source.setParentID(parentID)
+    return source
   })
-  const [state, setState] = createSignal<SubagentSourceState | undefined>(source.state())
   const clockStops = new Set<() => void>()
-  context.onCleanup(source.dispose)
-  context.onCleanup(source.subscribe(() => setState(source.state())))
-  context.onCleanup(() => {
+  scope.onCleanup(() => {
+    sources.dispose()
     for (const stop of clockStops) stop()
     clockStops.clear()
   })
 
+  function useState(parentID: () => string) {
+    const [state, setState] = createSignal<SubagentSourceState | undefined>()
+    createEffect(() => {
+      const lease = sources.acquire(parentID())
+      setState(lease?.source.state())
+      if (!lease) return
+      const unsubscribe = lease.source.subscribe(() => setState(lease.source.state()))
+      onCleanup(() => {
+        unsubscribe()
+        lease.release()
+      })
+    })
+    return state
+  }
+
   function SubagentPanel(props: { panelState: Extract<SubagentSourceState, { phase: "ready" | "stale" }> }) {
-    const parentID = () => props.panelState.parentID
+    // Snapshot updates must not reset disclosures for the same parent.
+    const parentID = createMemo(() => props.panelState.parentID)
     const [collapsed, setCollapsed] = createSignal(collapseDefaults.collapsed)
     const [expandedID, setExpandedID] = createSignal<string | undefined>()
     const [restExpanded, setRestExpanded] = createSignal(!collapseDefaults.secondaryCollapsed)
@@ -236,7 +254,7 @@ const plugin = defineTuiPlugin(descriptor, (context, api, options, meta) => {
     const model = createMemo<SubagentPanelModel>(() => createSubagentPanelModel(
       props.panelState.snapshot,
       props.panelState.failureTimes,
-      now(),
+      injected.now(),
     ))
     const summaryText = () => model().summary.map((segment) => segment.text).join("")
     const togglePanel = () => setCollapsed((current) => !current)
@@ -294,28 +312,29 @@ const plugin = defineTuiPlugin(descriptor, (context, api, options, meta) => {
         summary={collapsed() ? { text: summaryText(), segments: model().summary } : undefined}
         onToggle={togglePanel}
         footerDivider={!collapsed()}
-        theme={() => api.theme.current}
+        theme={theme}
       >
         <Show
           when={model().primary.length > 0 || model().rest.length > 0}
-          fallback={<text fg={api.theme.current.textMuted}>No subagents</text>}
+          fallback={<text fg={theme().textMuted}>No subagents</text>}
         >
           <For each={model().primary}>
             {(entry) => (
               <SubagentRow
                 entry={entry}
+                now={now}
                 expanded={expandedID() === entry.id}
                 onToggle={() => toggleEntry(entry.id)}
-                onOpenSession={() => api.route.navigate("session", { sessionID: entry.id })}
-                theme={() => api.theme.current}
+                onOpenSession={() => api.ui.router.navigate({ type: "session", sessionID: entry.id })}
+                theme={theme}
               />
             )}
           </For>
           <Show when={model().rest.length > 0}>
             <box flexDirection="row" width="100%" overflow="hidden">
-              <text flexShrink={0} fg={api.theme.current.textMuted}>---</text>
+              <text flexShrink={0} fg={theme().textMuted}>---</text>
               <text flexBasis={0} flexGrow={1} flexShrink={1} minWidth={0} />
-              <text flexShrink={0} fg={api.theme.current.textMuted}>---</text>
+              <text flexShrink={0} fg={theme().textMuted}>---</text>
             </box>
             <box
               flexDirection="row"
@@ -323,18 +342,19 @@ const plugin = defineTuiPlugin(descriptor, (context, api, options, meta) => {
               overflow="hidden"
               onMouseDown={toggleRest}
             >
-              <text width={2} flexShrink={0} fg={api.theme.current.textMuted}>{restExpanded() ? "▼ " : "▶ "}</text>
-              <text flexBasis={0} flexGrow={1} flexShrink={1} minWidth={0} fg={api.theme.current.textMuted}>Rest</text>
+              <text width={2} flexShrink={0} fg={theme().textMuted}>{restExpanded() ? "▼ " : "▶ "}</text>
+              <text flexBasis={0} flexGrow={1} flexShrink={1} minWidth={0} fg={theme().textMuted}>Rest</text>
             </box>
             <Show when={restExpanded()}>
               <For each={model().rest}>
                 {(entry) => (
                   <SubagentRow
                     entry={entry}
+                    now={now}
                     expanded={expandedID() === entry.id}
                     onToggle={() => toggleEntry(entry.id)}
-                    onOpenSession={() => api.route.navigate("session", { sessionID: entry.id })}
-                    theme={() => api.theme.current}
+                    onOpenSession={() => api.ui.router.navigate({ type: "session", sessionID: entry.id })}
+                    theme={theme}
                   />
                 )}
               </For>
@@ -347,7 +367,7 @@ const plugin = defineTuiPlugin(descriptor, (context, api, options, meta) => {
 
   function SubagentSlot(props: { parentID?: string }) {
     const parentID = () => props.parentID ?? ""
-    createEffect(() => source.setParentID(parentID()))
+    const state = useState(parentID)
     const panelState = createMemo(() => {
       const current = state()
       if (parentID() === "" || current?.parentID !== parentID()) return undefined
@@ -360,7 +380,8 @@ const plugin = defineTuiPlugin(descriptor, (context, api, options, meta) => {
     )
   }
 
-  function SubagentChip(props: { parentID: string; theme: () => PanelTheme }) {
+  function SubagentChip(props: { parentID: string }) {
+    const state = useState(() => props.parentID)
     const panelState = createMemo(() => {
       const current = state()
       if (props.parentID === "" || current?.parentID !== props.parentID) return undefined
@@ -373,24 +394,21 @@ const plugin = defineTuiPlugin(descriptor, (context, api, options, meta) => {
     const hasChildren = () => !!model() && (model()!.primary.length > 0 || model()!.rest.length > 0)
     return (
       <Show when={hasChildren()}>
-        <StatusChip label="Sub" segments={model()!.summary} theme={props.theme} />
+        <StatusChip label="Sub" segments={model()!.summary} theme={theme} />
       </Show>
     )
   }
 
-  api.slots.register({
-    order: descriptor.slotOrder,
-    slots: {
-      sidebar_content(_ctx, props) {
-        return <SubagentSlot parentID={props.session_id} />
-      },
-      session_prompt_right(_ctx, props) {
-        return chipEnabled
-          ? <SubagentChip parentID={props?.session_id ?? ""} theme={() => api.theme.current} />
-          : null
-      },
-    },
-  })
-})
+  scope.onCleanup(api.ui.slot({
+    append: "sidebar.content",
+    render: (props) => <SubagentSlot parentID={props.sessionID} />,
+  }))
+  if (chipEnabled) {
+    scope.onCleanup(api.ui.slot({
+      append: "prompt.footer.status",
+      render: (props) => <SubagentChip parentID={props.sessionID ?? ""} />,
+    }))
+  }
+}
 
-export default plugin
+export default defineTuiPlugin(descriptor, setupSubagent)

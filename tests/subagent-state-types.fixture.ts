@@ -1,61 +1,32 @@
-import type { Message, Session, SessionStatus } from "@opencode-ai/sdk/v2"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { SessionInfo, SessionMessageInfo } from "@opencode/client"
+import type { Plugin } from "@opencode/plugin/tui"
+import { unwrap } from "solid-js/store"
 
-type Equal<Left, Right> =
-  (<Value>() => Value extends Left ? 1 : 2) extends
-  (<Value>() => Value extends Right ? 1 : 2) ? true : false
-type Expect<Value extends true> = Value
-type IsAny<Value> = 0 extends (1 & Value) ? true : false
+import { createSessionSource } from "../lib/session-source.js"
+import type { RetainedFailures, SubagentEventRegistrar } from "../tui/services/subagent-source.js"
+import type { SubagentChildSnapshot } from "../tui/services/subagent-snapshot.js"
 
-type SidebarCallback = Parameters<TuiPluginApi["slots"]["register"]>[0]["slots"][string]
-type SidebarProps = Parameters<SidebarCallback>[1]
-
-export type SidebarPropsAreNotAny = Expect<Equal<IsAny<SidebarProps>, false>>
-export type SidebarPropsAreExactlyOptionalSessionID = Expect<Equal<
-  SidebarProps,
-  { session_id?: string }
->>
-
-export async function inspectSubagentApi(api: TuiPluginApi, sessionID: string) {
-  const directory: string = api.state.path.directory
-  const status: SessionStatus | undefined = api.state.session.status(sessionID)
-  const sessions: readonly Session[] | undefined = (
-    await api.client.session.list({ directory })
-  ).data
-  const messages: readonly { info: Message }[] | undefined = (
-    await api.client.session.messages({ sessionID, directory })
-  ).data
-  api.route.navigate("session", { sessionID })
-  api.kv.set("subagent-test", api.kv.get<Record<string, number>>("subagent-test", {}))
-  api.lifecycle.onDispose(() => undefined)
-
-  const unregister = [
-    api.event.on("session.created", (event) => event.properties.info.parentID),
-    api.event.on("session.updated", (event) => event.properties.info.id),
-    api.event.on("session.deleted", (event) => event.properties.sessionID),
-    api.event.on("session.status", (event) => {
-      const eventSessionID: string = event.properties.sessionID
-      const eventStatus: SessionStatus = event.properties.status
-      void eventSessionID
-      void eventStatus
-    }),
-    api.event.on("session.idle", (event) => event.properties.sessionID),
-    api.event.on("session.error", (event) => {
-      const eventSessionID: string | undefined = event.properties.sessionID
-      void eventSessionID
-    }),
-    api.event.on("message.updated", (event) => event.properties.info.id),
-    api.event.on("message.removed", (event) => event.properties.sessionID),
-    api.event.on("tui.session.select", (event) => event.properties.sessionID),
-  ]
-
-  api.slots.register({
-    slots: {
-      sidebar_content(_ctx, props) {
-        return props.session_id ? null : null
-      },
-    },
+export async function inspectSubagentApi(api: Plugin.Context, sessionID: string, signal: AbortSignal) {
+  const source = createSessionSource(api.client)
+  const status: "idle" | "running" = api.data.session.status(sessionID)
+  const sessions: SessionInfo[] = await source.listSessions({}, signal)
+  const messages: SessionMessageInfo[] = await source.listMessages(sessionID, signal)
+  const children: SubagentChildSnapshot[] = sessions.map((session) => ({ session, status, messages }))
+  api.ui.router.navigate({ type: "session", sessionID })
+  const [stored, updateStored] = api.storage.store<{ failures: RetainedFailures }>("subagent-test", {
+    initial: { failures: {} },
   })
-
-  return { directory, status, sessions, messages, unregister }
+  const failures: RetainedFailures = structuredClone(unwrap(stored.failures))
+  await updateStored((draft) => { draft.failures = failures })
+  const onEvent: SubagentEventRegistrar = api.data.on
+  const unregister = [
+    onEvent("session.execution.failed", (event) => event.data.error),
+    onEvent("session.execution.interrupted", (event) => event.data.reason),
+    onEvent("session.renamed", (event) => event.data.title),
+    onEvent("session.model.selected", (event) => event.data.model.id),
+    onEvent("session.status", (event) => event.data.status.type),
+    onEvent("session.compaction.ended", (event) => event.data.sessionID),
+    api.ui.slot({ append: "sidebar.content", render: (props) => props.sessionID ? null : null }),
+  ]
+  return { status, children, unregister }
 }

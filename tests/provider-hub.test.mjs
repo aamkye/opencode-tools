@@ -226,6 +226,19 @@ test("notifies subscribers when provider adapters are replaced or removed", () =
   assert.equal(snapshots.length, 2)
 })
 
+test("Go explicit config rotation replaces its poller while equivalent settings reuse it", () => {
+  const created = []
+  const hub = createQuotaProviderHub({}, createProviderFactories(created))
+  hub.addDemand(quotaDemand())
+  const first = hub.providers().find((provider) => provider.id === "opencode-go")
+  hub.addDemand(quotaDemand({ openCodeGo: { config: { ...config }, refreshIntervalMs: 20000 } }))
+  assert.equal(hub.providers().find((provider) => provider.id === "opencode-go"), first)
+  hub.addDemand(quotaDemand({ openCodeGo: { config: { ...config, workspaceToken: "ROTATED_TEST_ONLY" }, refreshIntervalMs: 20000 } }))
+  assert.notEqual(hub.providers().find((provider) => provider.id === "opencode-go"), first)
+  assert.equal(first.disposeCount, 1)
+  hub.dispose()
+})
+
 test("rolls back a failed replacement while another consumer remains active", () => {
   const created = []
   let failQuotaReplacement = true
@@ -289,7 +302,7 @@ test("acquireQuotaProviderHub removes demand before releasing the shared hub ser
     },
   }
   const context = {
-    api: {},
+    api: { location: { directory: "/remote", workspaceID: "wrk_test" } },
     onCleanup(cleanup) {
       this.cleanups.push(cleanup)
       return cleanup
@@ -314,10 +327,10 @@ test("acquireQuotaProviderHub removes demand before releasing the shared hub ser
   assert.equal(lease.value, hub)
   while (context.cleanups.length > 0) await context.cleanups.pop()()
   assert.deepEqual(events, [
-    ["acquireService", "quota-provider-hub"],
+    ["acquireService", 'quota-provider-hub:["/remote","wrk_test"]'],
     ["addDemand", { consumer: "home" }],
     ["removeDemand", "home"],
-    ["releaseService", "quota-provider-hub"],
+    ["releaseService", 'quota-provider-hub:["/remote","wrk_test"]'],
     ["disposeHub"],
   ])
 })

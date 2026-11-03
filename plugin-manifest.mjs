@@ -19,8 +19,10 @@ export function validatePluginManifest(entries) {
     }
 
     if (!validOptions.has(entry.options)) throw new TypeError(`invalid options at index ${index}`)
-    if (entry.slotOrder !== undefined && !Number.isFinite(entry.slotOrder)) {
-      throw new TypeError(`invalid slotOrder at index ${index}`)
+  }
+  for (const entry of entries) {
+    if (!/^[a-z]+(?:-[a-z]+)*$/.test(entry.key) || entry.outfile !== `opencode-tools-${entry.key}/tui.js`) {
+      throw new TypeError(`invalid package output: ${entry.outfile}`)
     }
   }
 }
@@ -30,3 +32,27 @@ validatePluginManifest(records)
 
 export const pluginManifest = Object.freeze(records.map((entry) => Object.freeze(entry)))
 export const PLUGIN_KEYS = Object.freeze(pluginManifest.map((entry) => entry.key))
+
+// Retirement inputs only. Paths are relative to the managed build/deployment root.
+export const retiredPluginPaths = Object.freeze([
+  ...["lsp", "todo"].flatMap((key) => [
+    `opencode-tools-${key}.js`, `tui/${key}.tsx`,
+    `opencode-tools-${key}`, `plugins/opencode-tools-${key}`,
+  ]),
+  "opencode-tools-token-report.js",
+  "tui/token-report.tsx",
+  "opencode-tools-token-report",
+  "plugins/opencode-tools-token-report",
+  "session-rename.ts",
+  "plugins/session-rename.ts",
+  "plugins/session-title.ts",
+])
+export const retiredPluginSpecs = Object.freeze([
+  ...["lsp", "todo"].flatMap((key) => [
+    `aamkye/opencode-tools-${key}`, `@aamkye/opencode-tools/${key}`, `opencode-tools/${key}`,
+  ]),
+  "aamkye/opencode-tools-token-report",
+  "@aamkye/opencode-tools/token-report",
+  "opencode-tools/token-report",
+  "aamkye/session-rename",
+])

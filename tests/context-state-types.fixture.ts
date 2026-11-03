@@ -1,24 +1,34 @@
-import type { Message, Provider } from "@opencode-ai/sdk/v2"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { ModelInfo, SessionMessageInfo } from "@opencode/client"
+import type { Plugin } from "@opencode/plugin/tui"
+
+import { createContextPanelModel } from "../tui/features/context.js"
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
   (<Value>() => Value extends Right ? 1 : 2) ? true : false
 type Expect<Value extends true> = Value
 
-export type ContextMessagesAreReadonlySdkMessages = Expect<Equal<
-  ReturnType<TuiPluginApi["state"]["session"]["messages"]>,
-  readonly Message[]
+export type ContextAcceptsNativeMessagesAndModels = Expect<Equal<
+  Parameters<typeof createContextPanelModel>,
+  [messages: readonly SessionMessageInfo[], models: readonly ModelInfo[], sessionCost: number | undefined]
+>>
+export type ContextMessagesAreNativeMessages = Expect<Equal<
+  ReturnType<Plugin.Context["data"]["session"]["message"]["list"]>,
+  SessionMessageInfo[]
 >>
 export type ContextMessagesRequireSessionID = Expect<Equal<
-  Parameters<TuiPluginApi["state"]["session"]["messages"]>,
+  Parameters<Plugin.Context["data"]["session"]["message"]["list"]>,
   [sessionID: string]
 >>
-export type ContextProvidersAreReadonlySdkProviders = Expect<Equal<
-  TuiPluginApi["state"]["provider"],
-  readonly Provider[]
+export type ContextModelsMayAwaitHydration = Expect<Equal<
+  ReturnType<Plugin.Context["data"]["location"]["model"]["list"]>,
+  ModelInfo[] | undefined
 >>
 
-export function inspectContextState(api: TuiPluginApi, sessionID: string) {
-  return { messages: api.state.session.messages(sessionID), providers: api.state.provider }
+export function inspectContextState(api: Plugin.Context, sessionID: string) {
+  return createContextPanelModel(
+    api.data.session.message.list(sessionID),
+    api.data.location.model.list(api.location ?? api.data.location.default()) ?? [],
+    api.data.session.get(sessionID)?.cost,
+  )
 }

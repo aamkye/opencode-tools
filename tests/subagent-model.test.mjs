@@ -23,10 +23,10 @@ function child(id, created, { messages = [], status, session: overrides = {} } =
 function assistant(id, created, overrides = {}) {
   return {
     id,
-    role: "assistant",
+    type: "assistant",
     time: { created, completed: created + 1_000 },
     agent: `agent-${id}`,
-    modelID: `model-${id}`,
+    model: { providerID: "openai", id: `model-${id}` },
     ...overrides,
   }
 }
@@ -34,10 +34,9 @@ function assistant(id, created, overrides = {}) {
 function user(id, created, overrides = {}) {
   return {
     id,
-    role: "user",
+    type: "user",
     time: { created },
-    agent: `agent-${id}`,
-    model: { modelID: `model-${id}` },
+    text: "hello",
     ...overrides,
   }
 }
@@ -46,19 +45,47 @@ function snapshot(children, parentID = "parent") {
   return { parentID, childIDs: children.map(({ session }) => session.id), children }
 }
 
+test("native outcome dominates running and native idle time freezes terminal duration", () => {
+  const model = createSubagentPanelModel(snapshot([
+    child("failed", 100, { status: "running", session: { outcome: "failed", time: { created: 100, updated: 9_000, idle: 1_100 } } }),
+    child("interrupted", 100, { status: "running", session: { outcome: "interrupted", time: { created: 100, updated: 9_000, idle: 2_100 } } }),
+    child("running", 100, { status: "running", session: { outcome: "succeeded" } }),
+    child("idle", 100, { status: "idle", session: { time: { created: 100, updated: 9_000, idle: 3_100 }, agent: "reviewer", model: { providerID: "openai", id: "native-model" } } }),
+  ]), {}, 5_100)
+  const entries = Object.fromEntries(model.primary.map((entry) => [entry.id, entry]))
+  assert.deepEqual([entries.failed.status, entries.failed.durationMs], ["failed", 1_000])
+  assert.deepEqual([entries.interrupted.status, entries.interrupted.durationMs], ["failed", 2_000])
+  assert.deepEqual([entries.running.status, entries.running.durationMs], ["running", 5_000])
+  assert.deepEqual([entries.idle.status, entries.idle.durationMs, entries.idle.agent, entries.idle.model], ["successful", 3_000, "reviewer", "native-model"])
+})
+
+test("native message completion and idle records freeze durations without using rename times", () => {
+  const model = createSubagentPanelModel(snapshot([
+    child("completed", 100, { messages: [assistant("answer", 500, { time: { created: 500, completed: 2_100 } })], session: { time: { created: 100, updated: 99_000 } } }),
+    child("idle", 100, { messages: [{ id: "idle", type: "idle", outcome: "succeeded", time: { created: 3_100 } }] }),
+    child("interrupted", 100, { status: "running", messages: [{ id: "idle", type: "idle", outcome: "interrupted", time: { created: 4_100 } }] }),
+    child("invalid-failure", 100, { status: "running", messages: [{ id: "idle", type: "idle", outcome: "failed", time: { created: Number.NaN } }] }),
+  ]), {}, 200_000)
+  const entries = Object.fromEntries(model.primary.map((entry) => [entry.id, entry]))
+  assert.deepEqual([entries.completed.status, entries.completed.durationMs], ["successful", 2_000])
+  assert.deepEqual([entries.idle.status, entries.idle.durationMs], ["successful", 3_000])
+  assert.deepEqual([entries.interrupted.status, entries.interrupted.durationMs], ["failed", 4_000])
+  assert.deepEqual([entries["invalid-failure"].status, entries["invalid-failure"].durationMs], ["failed", 0])
+})
+
 test("filters non-direct children and sorts equal creation times by ID", () => {
   const model = createSubagentPanelModel(snapshot([
-    child("direct-b", 200, { status: { type: "idle" } }),
+    child("direct-b", 200, { status: "idle" }),
     child("grandchild", 300, {
-      status: { type: "idle" },
+      status: "idle",
       session: { parentID: "direct-b" },
     }),
-    child("direct-a", 200, { status: { type: "idle" } }),
+    child("direct-a", 200, { status: "idle" }),
     child("reparented", 400, {
-      status: { type: "idle" },
+      status: "idle",
       session: { parentID: "other-parent" },
     }),
-    child("direct-old", 100, { status: { type: "idle" } }),
+    child("direct-old", 100, { status: "idle" }),
   ]), {}, 1_000)
 
   assert.deepEqual(model.primary.map(({ id }) => id), ["direct-a", "direct-b", "direct-old"])
@@ -67,7 +94,7 @@ test("filters non-direct children and sorts equal creation times by ID", () => {
 
 test("splits the newest five from Rest and counts every direct child", () => {
   const children = Array.from({ length: 7 }, (_, index) =>
-    child(`child-${index + 1}`, index + 1, { status: { type: "idle" } }))
+    child(`child-${index + 1}`, index + 1, { status: "idle" }))
 
   const model = createSubagentPanelModel(snapshot(children), {}, 10_000)
 
@@ -79,18 +106,18 @@ test("splits the newest five from Rest and counts every direct child", () => {
   )
 })
 
-test("applies failure busy retry idle completion and running precedence", () => {
+test("applies failure running idle and completion precedence", () => {
   const completed = assistant("completed", 100)
   const inProgress = assistant("in-progress", 100, { time: { created: 100 } })
   const children = [
-    child("retained-failure", 0, { status: { type: "busy" } }),
+    child("retained-failure", 0, { status: "running" }),
     child("message-failure", 0, {
-      status: { type: "retry", attempt: 1, message: "retrying", next: 1_000 },
+      status: "running",
       messages: [assistant("errored", 100, { error: { name: "UnknownError" } })],
     }),
-    child("busy", 0, { status: { type: "busy" } }),
-    child("retry", 0, { status: { type: "retry", attempt: 1, message: "retrying", next: 1_000 } }),
-    child("idle", 0, { status: { type: "idle" } }),
+    child("busy", 0, { status: "running", messages: [completed] }),
+    child("retry", 0, { status: "running", messages: [assistant("retrying", 100, { retry: { attempt: 1, at: 1_000 } })] }),
+    child("idle", 0, { status: "idle" }),
     child("completed", 0, { messages: [completed] }),
     child("in-progress", 0, { messages: [inProgress] }),
     child("no-result", 0),
@@ -142,25 +169,26 @@ test("treats defined non-finite assistant completion values as successful", () =
   assert.ok(model.primary.every(({ durationMs }) => Number.isFinite(durationMs) && durationMs >= 0))
 })
 
-test("uses only the newest assistant then newest user identity fields", () => {
+test("uses native session identity then only the newest assistant as fallback", () => {
   const messages = [
-    assistant("old-assistant", 100, { agent: "old-assistant-agent", modelID: "old-assistant-model" }),
-    user("old-user", 200, { agent: "old-user-agent", model: { modelID: "old-user-model" } }),
-    user("new-user", 300, { agent: "new-user-agent", model: { modelID: "new-user-model" } }),
-    assistant("new-assistant", 400, { agent: "new-assistant-agent", modelID: undefined }),
+    assistant("old-assistant", 100),
+    user("new-user", 300),
+    assistant("new-assistant", 400, { agent: "new-assistant-agent", model: { providerID: "openai", id: "new-model" } }),
   ]
   const missingNewestFields = [
-    user("old-user-2", 100, { agent: "must-not-scan", model: { modelID: "must-not-scan" } }),
-    user("new-user-2", 200, { agent: undefined, model: undefined }),
+    assistant("old-assistant", 100),
+    assistant("new-assistant", 200, { agent: "", model: { providerID: "openai", id: "" } }),
   ]
 
   const model = createSubagentPanelModel(snapshot([
-    child("fallback", 0, { status: { type: "idle" }, messages }),
-    child("missing", 1, { status: { type: "idle" }, messages: missingNewestFields }),
+    child("fallback", 0, { status: "idle", messages }),
+    child("missing", 1, { status: "idle", messages: missingNewestFields }),
+    child("session", 2, { status: "idle", messages, session: { agent: "session-agent", model: { providerID: "openai", id: "session-model" } } }),
   ]), {}, 1_000)
   const entries = Object.fromEntries(model.primary.map((entry) => [entry.id, entry]))
 
-  assert.deepEqual([entries.fallback.agent, entries.fallback.model], ["new-assistant-agent", "new-user-model"])
+  assert.deepEqual([entries.fallback.agent, entries.fallback.model], ["new-assistant-agent", "new-model"])
+  assert.deepEqual([entries.session.agent, entries.session.model], ["session-agent", "session-model"])
   assert.deepEqual([entries.missing.agent, entries.missing.model], ["-", "-"])
 })
 
@@ -193,9 +221,9 @@ test("uses the earliest retained or message failure time", () => {
 
 test("preserves retained failure precedence with non-finite timestamps", () => {
   const model = createSubagentPanelModel(snapshot([
-    child("nan-retained", 1_000, { status: { type: "idle" } }),
+    child("nan-retained", 1_000, { status: "idle" }),
     child("infinite-retained", 1_000, {
-      status: { type: "busy" },
+      status: "running",
       messages: [assistant("errored", 3_000, {
         error: { name: "UnknownError" },
         time: { created: 3_000 },
@@ -222,12 +250,12 @@ test("clamps invalid timestamps and formats duration boundaries", () => {
   const boundaries = [0, 59_000, 60_000, 3_599_000, 3_600_000]
   const model = createSubagentPanelModel(snapshot([
     ...boundaries.map((duration, index) =>
-      child(`duration-${index}`, now - duration, { status: { type: "busy" } })),
+      child(`duration-${index}`, now - duration, { status: "running" })),
     child("negative-success", 5_000, {
-      status: { type: "idle" },
-      session: { time: { created: 5_000, updated: 4_000 } },
+      status: "idle",
+      session: { time: { created: 5_000, updated: 6_000, idle: 4_000 } },
     }),
-    child("invalid-running", Number.NaN, { status: { type: "busy" } }),
+    child("invalid-running", Number.NaN, { status: "running" }),
   ]), {}, now)
   const entries = Object.fromEntries([...model.primary, ...model.rest].map((entry) => [entry.id, entry]))
 
@@ -243,8 +271,8 @@ test("clamps invalid timestamps and formats duration boundaries", () => {
 
 test("colors successful running failed counts and muted separators", () => {
   const children = [
-    ...Array.from({ length: 7 }, (_, index) => child(`success-${index}`, index, { status: { type: "idle" } })),
-    child("running", 20, { status: { type: "busy" } }),
+    ...Array.from({ length: 7 }, (_, index) => child(`success-${index}`, index, { status: "idle" })),
+    child("running", 20, { status: "running" }),
     ...Array.from({ length: 3 }, (_, index) => child(`failed-${index}`, 30 + index)),
   ]
   const failures = Object.fromEntries(Array.from({ length: 3 }, (_, index) => [`failed-${index}`, 100]))

@@ -9,16 +9,16 @@ test("maps every MCP status in host order without exposing runtime errors", () =
     "disabled runtime detail",
     "failed runtime detail",
     "auth runtime detail",
-    "client runtime detail",
+    "pending runtime detail",
     "future runtime detail",
   ]
   const model = createMcpPanelModel([
-    { name: "connected", status: "connected", error: errorStrings[0] },
-    { name: "disabled", status: "disabled", error: errorStrings[1] },
-    { name: "failed", status: "failed", error: errorStrings[2] },
-    { name: "auth", status: "needs_auth", error: errorStrings[3] },
-    { name: "client", status: "needs_client_registration", error: errorStrings[4] },
-    { name: "future", status: "future_status", error: errorStrings[5] },
+    { name: "connected", status: { status: "connected", error: errorStrings[0] } },
+    { name: "disabled", status: { status: "disabled", error: errorStrings[1] } },
+    { name: "failed", status: { status: "failed", error: errorStrings[2] } },
+    { name: "auth", status: { status: "needs_auth", error: errorStrings[3] } },
+    { name: "pending", status: { status: "pending", error: errorStrings[4] } },
+    { name: "future", status: { status: "future_status", error: errorStrings[5] } },
   ])
 
   assert.deepEqual(model.rows, [
@@ -26,12 +26,12 @@ test("maps every MCP status in host order without exposing runtime errors", () =
     { name: "disabled", label: "Disabled", status: "textMuted" },
     { name: "failed", label: "Failed", status: "error" },
     { name: "auth", label: "Needs auth", status: "error" },
-    { name: "client", label: "Needs client ID", status: "error" },
+    { name: "pending", label: "Pending", status: "warning" },
     { name: "future", label: "Unknown", status: "textMuted" },
   ])
   assert.equal(model.connected, 1)
-  assert.equal(model.warning, 1)
-  assert.equal(model.error, 4)
+  assert.equal(model.warning, 2)
+  assert.equal(model.error, 3)
   assert.equal(model.total, 6)
   const serialized = JSON.stringify(model)
   for (const errorString of errorStrings) assert.equal(serialized.includes(errorString), false)
@@ -39,8 +39,8 @@ test("maps every MCP status in host order without exposing runtime errors", () =
 
 test("segments roll up success, warning, and error counts with unconditional bucket colors", () => {
   const fullyConnected = createMcpPanelModel([
-    { name: "one", status: "connected" },
-    { name: "two", status: "connected" },
+    { name: "one", status: { status: "connected" } },
+    { name: "two", status: { status: "connected" } },
   ])
   assert.equal(fullyConnected.connected, 2)
   assert.equal(fullyConnected.warning, 0)
@@ -55,9 +55,9 @@ test("segments roll up success, warning, and error counts with unconditional buc
   ])
 
   const partiallyConnected = createMcpPanelModel([
-    { name: "one", status: "connected" },
-    { name: "two", status: "connected" },
-    { name: "three", status: "disabled" },
+    { name: "one", status: { status: "connected" } },
+    { name: "two", status: { status: "connected" } },
+    { name: "three", status: { status: "disabled" } },
   ])
   assert.equal(partiallyConnected.connected, 2)
   assert.equal(partiallyConnected.warning, 1)
@@ -85,26 +85,26 @@ test("segments roll up success, warning, and error counts with unconditional buc
   ])
 })
 
-test("rolls mixed statuses into a 1/1/4 summary while preserving expanded-row colors", () => {
+test("rolls mixed statuses into a 1/2/3 summary while preserving expanded-row colors", () => {
   const model = createMcpPanelModel([
-    { name: "alpha", status: "connected" },
-    { name: "beta", status: "disabled" },
-    { name: "gamma", status: "failed" },
-    { name: "delta", status: "needs_auth" },
-    { name: "epsilon", status: "needs_client_registration" },
-    { name: "zeta", status: "future_status" },
+    { name: "alpha", status: { status: "connected" } },
+    { name: "beta", status: { status: "disabled" } },
+    { name: "gamma", status: { status: "failed", error: "private failure" } },
+    { name: "delta", status: { status: "needs_auth", error: "private auth" } },
+    { name: "epsilon", status: { status: "pending" } },
+    { name: "zeta", status: { status: "future_status" } },
   ])
 
   assert.equal(model.connected, 1)
-  assert.equal(model.warning, 1)
-  assert.equal(model.error, 4)
+  assert.equal(model.warning, 2)
+  assert.equal(model.error, 3)
   assert.equal(model.total, 6)
   assert.deepEqual(model.summary, [
     { text: "1", status: "success" },
     { text: "/", status: "textMuted" },
-    { text: "1", status: "warning" },
+    { text: "2", status: "warning" },
     { text: "/", status: "textMuted" },
-    { text: "4", status: "error" },
+    { text: "3", status: "error" },
   ])
   assert.deepEqual(
     model.rows.map((row) => [row.name, row.label, row.status]),
@@ -113,8 +113,13 @@ test("rolls mixed statuses into a 1/1/4 summary while preserving expanded-row co
       ["beta", "Disabled", "textMuted"],
       ["gamma", "Failed", "error"],
       ["delta", "Needs auth", "error"],
-      ["epsilon", "Needs client ID", "error"],
+      ["epsilon", "Pending", "warning"],
       ["zeta", "Unknown", "textMuted"],
     ],
   )
+})
+
+test("counts native pending MCP servers as warnings", () => {
+  const mcp = createMcpPanelModel([{ name: "pending-server", status: { status: "pending" } }])
+  assert.equal(mcp.warning, 1)
 })

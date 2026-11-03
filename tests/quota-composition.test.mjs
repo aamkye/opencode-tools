@@ -20,7 +20,7 @@ process.env.HOME = isolatedProviderHome
 process.env.XDG_CONFIG_HOME = isolatedProviderHome
 process.env.XDG_DATA_HOME = isolatedProviderHome
 
-const { default: quotaPlugin } = await import("../.tmp-test/plugin-adapters-quota-fixture.mjs")
+const { mountQuotaSurfaces } = await import("../.tmp-test/home-composition.mjs")
 const { composeQuotaPanel, normalizeQuotaOptions, selectedQuotaProviderID, selectedSessionQuotaProviderID } = await import("../.tmp-test/quota-composition.mjs")
 const { createQuotaSelectionHost, mountQuotaSelection } = await import("../.tmp-test/quota-selection.mjs")
 const { normalizePanelModel } = await import("../.tmp-test/presentation-renderer.mjs")
@@ -329,12 +329,10 @@ test("composes stale collapsed summaries from real OpenAI and Z.AI adapters", as
 })
 
 async function activateQuotaPlugin(t, options, observations = { intervals: [], requests: [] }) {
-  const registrations = []
   const cleanup = []
   const originalFetch = globalThis.fetch
   const originalSetInterval = globalThis.setInterval
   const originalClearInterval = globalThis.clearInterval
-  const originalReact = globalThis.React
   const originalError = console.error
   const testFetch = async (url, requestOptions) => {
     if (url === "https://api.z.ai/api/monitor/usage/quota/limit") {
@@ -375,7 +373,6 @@ async function activateQuotaPlugin(t, options, observations = { intervals: [], r
     }
     throw new Error(`Unexpected quota URL: ${url}`)
   }
-  globalThis.React = { createElement: (component, props) => ({ component, props }) }
   globalThis.fetch = testFetch
   globalThis.setInterval = (callback, delay, ...args) => {
     const timer = originalSetInterval(callback, delay, ...args)
@@ -401,46 +398,20 @@ async function activateQuotaPlugin(t, options, observations = { intervals: [], r
       globalThis.fetch = originalFetch
       globalThis.setInterval = originalSetInterval
       globalThis.clearInterval = originalClearInterval
-      globalThis.React = originalReact
       console.error = originalError
     }
   })
 
-  const api = {
-    state: {
-      provider: [
-        { id: "zai-coding-plan", key: "test-zai-key" },
-        { id: "openai", key: "test-openai-token" },
-      ],
-      session: { messages: () => [] },
-      part: () => [],
-    },
-    event: { on: () => () => {} },
-    kv: { get: () => undefined, set: () => {} },
-    lifecycle: {
-      signal: new AbortController().signal,
-      onDispose(fn) {
-        cleanup.push(() => {
-          assert.equal(globalThis.fetch, testFetch, "adapter cleanup must run before fetch restoration")
-          fn()
-        })
-        return () => {}
-      },
-    },
-    theme: { current: { error: "error", warning: "warning", success: "success", text: "text", textMuted: "muted" } },
-    slots: { register: (registration) => registrations.push(registration) },
-  }
-
-  await quotaPlugin.tui(api, options)
+  const mounted = await mountQuotaSurfaces({ home: false, options })
+  cleanup.push(mounted.dispose)
   await flushEffects()
-  return { registrations }
+  return mounted
 }
 
 async function aggregatePanel(t, options, observations = { intervals: [], requests: [] }) {
-  const { registrations } = await activateQuotaPlugin(t, options, observations)
-  const element = registrations[0].slots.sidebar_content({}, { session_id: "session-1" })
+  const mounted = await activateQuotaPlugin(t, options, observations)
   await flushEffects()
-  return element.props.model()
+  return mounted.sidebarText()
 }
 
 async function aggregateRegistration(t, options, observations = { intervals: [], requests: [] }) {
@@ -477,20 +448,20 @@ test("OpenCode Go integration constructs quota-only polling with normalized opti
   assert.equal(observations.intervals.filter((timer) => timer.active && timer.delay === 2_500).length, 3)
 })
 
-test("quota plugin keeps the manifest-owned sidebar slot 130", async (t) => {
+test("quota plugin contributes to the native sidebar slot", async (t) => {
   const registration = await aggregateRegistration(t, {
     quota: { refreshIntervalSeconds: 2.5, opencodego: sentinel },
   })
 
-  assert.equal(registration.order, 130)
+  assert.equal(registration.append, "sidebar.content")
 })
 
-test("shared quota composition preserves manifest slot 130", () => {
+test("shared quota composition has no host slot ordering", () => {
   const model = composeQuotaPanel(supported("zai"), [
     provider({ id: "zai", title: "Z.AI", order: 110, primaryPct: 50 }),
   ])
 
-  assert.equal(model.order, 130)
+  assert.equal(model.order, 0)
 })
 
 test("keeps the selected supported provider first while loading or unavailable", () => {
@@ -832,23 +803,23 @@ test("OpenCode Go integration resolves both runtime aliases", () => {
   assert.deepEqual(selectedQuotaProviderID([{ id: "opencode-go" }], providers), supported("opencode-go"))
   assert.deepEqual(selectedQuotaProviderID([{ id: "opencode-go-subscription" }], providers), supported("opencode-go"))
   assert.deepEqual(selectedSessionQuotaProviderID([
-    { role: "user", model: { providerID: "opencode-go-subscription" } },
+    { type: "assistant", model: { providerID: "opencode-go-subscription" } },
   ], providers, { kind: "none" }), supported("opencode-go"))
 })
 
-test("resolves the newest supported user model and falls back without usable metadata", () => {
+test("resolves the newest supported assistant model and falls back without usable metadata", () => {
   const zai = provider({ id: "zai", title: "Z.AI", order: 110 })
   const openai = provider({ id: "openai", title: "OpenAI", order: 120 })
   const providers = [zai, openai]
 
   assert.deepEqual(selectedSessionQuotaProviderID([
-    { id: "m1", role: "user", model: { providerID: "zai-coding-plan", modelID: "glm-4.7" } },
-    { id: "m2", role: "assistant" },
-    { id: "m3", role: "user", model: { providerID: "codex", modelID: "gpt-5" } },
+    { id: "m1", type: "assistant", model: { providerID: "zai-coding-plan", id: "glm-4.7" } },
+    { id: "m2", type: "user" },
+    { id: "m3", type: "assistant", model: { providerID: "codex", id: "gpt-5" } },
   ], providers, supported("zai")), supported("openai"))
   assert.deepEqual(selectedSessionQuotaProviderID([], providers, supported("zai")), supported("zai"))
   assert.deepEqual(selectedSessionQuotaProviderID([
-    { id: "m4", role: "user", model: { providerID: "unsupported", modelID: "other" } },
+    { id: "m4", type: "assistant", model: { providerID: "unsupported", id: "other" } },
   ], providers, supported("zai")), { kind: "unsupported", providerID: "unsupported" })
 })
 
@@ -862,10 +833,10 @@ test("distinguishes configured support, unconfigured known adapters, and unsuppo
     providerID: "openai",
   })
   assert.deepEqual(selectedSessionQuotaProviderID([
-    { id: "z1", role: "user", model: { providerID: "zai-coding-plan" } },
+    { id: "z1", type: "assistant", model: { providerID: "zai-coding-plan" } },
   ], providers, { kind: "supported", providerID: "openai" }), { kind: "none" })
   assert.deepEqual(selectedSessionQuotaProviderID([
-    { id: "a1", role: "user", model: { providerID: "anthropic" } },
+    { id: "a1", type: "assistant", model: { providerID: "anthropic" } },
   ], providers, { kind: "supported", providerID: "openai" }), {
     kind: "unsupported",
     providerID: "anthropic",
@@ -878,7 +849,7 @@ test("renders the latest unsupported session provider without refreshing an adap
   const host = createQuotaSelectionHost({
     provider: [{ id: "zai-coding-plan" }],
     messages: {
-      "session-1": [{ id: "a1", role: "user", model: { providerID: "anthropic", modelID: "claude" } }],
+      "session-1": [{ id: "a1", type: "assistant", model: { providerID: "anthropic", id: "claude" } }],
     },
   })
   const selection = mountQuotaSelection(host.api, [zai])
@@ -904,7 +875,22 @@ test("renders the latest unsupported session provider without refreshing an adap
   })
 })
 
-test("uses the active user event before synchronized messages catch up", async (t) => {
+test("native session model wins over older cached assistant messages and tracks session cache updates", async (t) => {
+  const adapters = [provider({ id: "zai", title: "Z.AI", order: 110 }), provider({ id: "openai", title: "OpenAI", order: 120 })]
+  const host = createQuotaSelectionHost({
+    provider: [{ id: "zai-coding-plan" }],
+    models: { "session-1": { providerID: "openai", id: "gpt" } },
+    messages: { "session-1": [{ type: "assistant", model: { providerID: "zai", id: "glm" } }] },
+  })
+  t.after(() => host.dispose())
+  const selection = mountQuotaSelection(host.api, adapters)
+  selection.renderSidebar("session-1")
+  assert.deepEqual(selection.selectedProviderID(), supported("openai"))
+  host.setModel("session-1", { providerID: "zai", id: "glm" })
+  assert.deepEqual(selection.selectedProviderID(), supported("zai"))
+})
+
+test("uses the native model selection event before synchronized messages catch up", async (t) => {
   const refreshes = []
   const zai = provider({
     id: "zai",
@@ -924,8 +910,8 @@ test("uses the active user event before synchronized messages catch up", async (
   const host = createQuotaSelectionHost({
     provider: [{ id: "zai-coding-plan" }],
     messages: {
-      "session-1": [{ id: "z1", role: "user", model: { providerID: "zai-coding-plan", modelID: "glm-4.7" } }],
-      "session-2": [{ id: "z2", role: "user", model: { providerID: "zai-coding-plan", modelID: "glm-4.7" } }],
+      "session-1": [{ id: "z1", type: "assistant", model: { providerID: "zai-coding-plan", id: "glm-4.7" } }],
+      "session-2": [{ id: "z2", type: "assistant", model: { providerID: "zai-coding-plan", id: "glm-4.7" } }],
     },
   })
   const selection = mountQuotaSelection(host.api, providers)
@@ -937,10 +923,10 @@ test("uses the active user event before synchronized messages catch up", async (
   assert.deepEqual(refreshes, ["zai"])
 
   const readsBeforeEvent = host.messageReadCount()
-  host.emitMessageUpdated("session-1", {
+  host.emitModelSelected("session-1", {
     id: "o1",
-    role: "user",
-    model: { providerID: "chatgpt", modelID: "gpt-5.6-sol" },
+    type: "assistant",
+    model: { providerID: "chatgpt", id: "gpt-5.6-sol" },
   })
 
   assert.deepEqual(selection.selectedProviderID(), supported("openai"))
@@ -951,28 +937,28 @@ test("uses the active user event before synchronized messages catch up", async (
   await flushEffects()
   assert.deepEqual(refreshes, ["zai", "openai"])
 
-  host.emitMessageUpdated("session-1", {
+  host.emitModelSelected("session-1", {
     id: "o2",
-    role: "user",
-    model: { providerID: "opencode", modelID: "gpt-5" },
+    type: "assistant",
+    model: { providerID: "opencode", id: "gpt-5" },
   })
   await flushEffects()
   assert.deepEqual(selection.selectedProviderID(), supported("openai"))
   assert.deepEqual(refreshes, ["zai", "openai"])
 
-  host.emitMessageUpdated("session-1", {
+  host.emitModelSelected("session-1", {
     id: "u1",
-    role: "user",
-    model: { providerID: "unsupported", modelID: "other" },
+    type: "assistant",
+    model: { providerID: "unsupported", id: "other" },
   })
   await flushEffects()
   assert.deepEqual(selection.selectedProviderID(), { kind: "unsupported", providerID: "unsupported" })
   assert.deepEqual(refreshes, ["zai", "openai"])
 
-  host.emitMessageUpdated("session-1", {
+  host.emitModelSelected("session-1", {
     id: "o3",
-    role: "user",
-    model: { providerID: "openai", modelID: "gpt-5" },
+    type: "assistant",
+    model: { providerID: "openai", id: "gpt-5" },
   })
   assert.deepEqual(selection.selectedProviderID(), supported("openai"))
   selection.renderSidebar("session-2")
@@ -1003,8 +989,8 @@ test("reacts to synchronized same-session model changes through the public event
   const host = createQuotaSelectionHost({
     provider: [{ id: "zai-coding-plan" }],
     messages: {
-      "session-1": [{ id: "z1", role: "user", model: { providerID: "zai-coding-plan", modelID: "glm-4.7" } }],
-      "session-2": [{ id: "o1", role: "user", model: { providerID: "openai", modelID: "gpt-5" } }],
+      "session-1": [{ id: "z1", type: "assistant", model: { providerID: "zai-coding-plan", id: "glm-4.7" } }],
+      "session-2": [{ id: "o1", type: "assistant", model: { providerID: "openai", id: "gpt-5" } }],
     },
   })
   const selection = mountQuotaSelection(host.api, providers)
@@ -1015,36 +1001,16 @@ test("reacts to synchronized same-session model changes through the public event
   assert.deepEqual(refreshes, ["zai"])
 
   const readsBeforeUnrelatedEvent = host.messageReadCount()
-  host.emitMessageUpdated("session-2")
+  host.emitModelSelected("session-2")
   await flushEffects()
   assert.equal(host.messageReadCount(), readsBeforeUnrelatedEvent)
   assert.deepEqual(refreshes, ["zai"])
 
-  let assistantEvent
-  const stopCapturingEvent = host.api.event.on("message.updated", (event) => {
-    assistantEvent = event
-  })
-  const readsBeforeAssistantEvent = host.messageReadCount()
-  host.emitMessageUpdated("session-1", { id: "a1", role: "assistant" })
-  await flushEffects()
-  stopCapturingEvent()
-  assert.deepEqual(assistantEvent, {
-    id: "message.updated:a1",
-    type: "message.updated",
-    properties: {
-      sessionID: "session-1",
-      info: { id: "a1", role: "assistant", sessionID: "session-1" },
-    },
-  })
-  assert.equal(host.messageReadCount(), readsBeforeAssistantEvent)
-  assert.deepEqual(selection.selectedProviderID(), supported("zai"))
-  assert.deepEqual(refreshes, ["zai"])
-
   host.setMessages("session-1", [
-    { id: "o2", role: "user", model: { providerID: "chatgpt", modelID: "gpt-5.6-sol" } },
+    { id: "o2", type: "assistant", model: { providerID: "chatgpt", id: "gpt-5.6-sol" } },
   ])
   assert.deepEqual(selection.selectedProviderID(), supported("zai"))
-  host.emitMessageUpdated("session-1")
+  host.emitModelSelected("session-1")
 
   assert.deepEqual(selection.selectedProviderID(), supported("openai"))
   const model = composeQuotaPanel(selection.selectedProviderID(), providers)
@@ -1053,7 +1019,7 @@ test("reacts to synchronized same-session model changes through the public event
   await flushEffects()
   assert.deepEqual(refreshes, ["zai", "openai"])
 
-  host.emitMessageUpdated("session-1")
+  host.emitModelSelected("session-1")
   await flushEffects()
   assert.deepEqual(refreshes, ["zai", "openai"])
   assert.equal(host.eventListenerCount(), 1)
@@ -1062,9 +1028,9 @@ test("reacts to synchronized same-session model changes through the public event
   assert.equal(host.eventListenerCount(), 0)
   const readsAfterDisposal = host.messageReadCount()
   host.setMessages("session-1", [
-    { id: "z2", role: "user", model: { providerID: "zai-coding-plan", modelID: "glm-4.7" } },
+    { id: "z2", type: "assistant", model: { providerID: "zai-coding-plan", id: "glm-4.7" } },
   ])
-  host.emitMessageUpdated("session-1")
+  host.emitModelSelected("session-1")
   await flushEffects()
   assert.equal(host.messageReadCount(), readsAfterDisposal)
   assert.deepEqual(refreshes, ["zai", "openai"])
@@ -1080,8 +1046,8 @@ test("OpenCode Go integration reacts to active-session selection and preserves a
     provider: [{ id: "zai-coding-plan" }],
     messages: {
       "session-1": [
-        { id: "z1", role: "user", model: { providerID: "zai-coding-plan", modelID: "glm-4.7" } },
-        { id: "g1", role: "user", model: { providerID: "opencode-go-subscription", modelID: "go" } },
+        { id: "z1", type: "assistant", model: { providerID: "zai-coding-plan", id: "glm-4.7" } },
+        { id: "g1", type: "assistant", model: { providerID: "opencode-go-subscription", id: "go" } },
       ],
     },
   })
@@ -1100,15 +1066,15 @@ test("OpenCode Go integration reacts to active-session selection and preserves a
     selection.renderSidebar("session-1")
     await flushEffects()
     host.setMessages("session-1", [
-      { id: "g2", role: "user", model: { providerID: "opencode-go", modelID: "go-fast" } },
+      { id: "g2", type: "assistant", model: { providerID: "opencode-go", id: "go-fast" } },
     ])
-    host.emitMessageUpdated("session-1")
+    host.emitModelSelected("session-1")
     await flushEffects()
     assert.equal(openCodeGo.refreshCalls, 1)
     host.setMessages("session-1", [
-      { id: "o1", role: "user", model: { providerID: "openai", modelID: "gpt-5" } },
+      { id: "o1", type: "assistant", model: { providerID: "openai", id: "gpt-5" } },
     ])
-    host.emitMessageUpdated("session-1")
+    host.emitModelSelected("session-1")
     await flushEffects()
 
     assert.deepEqual(refreshes, ["openai"])
@@ -1151,10 +1117,10 @@ test("uses reactive fallback for unreadable messages and stops refreshing after 
   const host = createQuotaSelectionHost({
     provider: [{ id: "zai-coding-plan" }],
     messages: {
-      "session-1": [{ id: "o1", role: "user", model: { providerID: "openai", modelID: "gpt-5" } }],
+      "session-1": [{ id: "o1", type: "assistant", model: { providerID: "openai", id: "gpt-5" } }],
     },
   })
-  host.api.lifecycle.onDispose(() => providers.forEach((adapter) => adapter.dispose()))
+  host.onCleanup(() => providers.forEach((adapter) => adapter.dispose()))
   const selection = mountQuotaSelection(host.api, providers)
 
   selection.renderSidebar("session-1")
@@ -1173,7 +1139,7 @@ test("uses reactive fallback for unreadable messages and stops refreshing after 
   host.setProvider([{ id: "zai-coding-plan" }])
   host.setUnreadableMessages(false)
   host.setMessages("session-1", [
-    { id: "z2", role: "user", model: { providerID: "zai-coding-plan", modelID: "glm-4.7" } },
+    { id: "z2", type: "assistant", model: { providerID: "zai-coding-plan", id: "glm-4.7" } },
   ])
   await flushEffects()
 
@@ -1202,7 +1168,7 @@ test("disposes the selection root when lifecycle registration fails during activ
   assert.equal(host.eventListenerCount(), 0)
   const providerReadsAfterFailure = host.providerReadCount()
   const messageReadsAfterFailure = host.messageReadCount()
-  host.emitMessageUpdated("session-1")
+  host.emitModelSelected("session-1")
   host.setProvider([{ id: "openai" }])
   await flushEffects()
 
@@ -1229,7 +1195,7 @@ test("does not retain a selection root when activation reaches an already dispos
   assert.equal(host.eventListenerCount(), 0)
   const providerReadsAfterActivation = host.providerReadCount()
   const messageReadsAfterActivation = host.messageReadCount()
-  host.emitMessageUpdated("session-1")
+  host.emitModelSelected("session-1")
   host.setProvider([{ id: "openai" }])
   await flushEffects()
 
@@ -1241,11 +1207,11 @@ test("does not retain a selection root when activation reaches an already dispos
 test("falls back to remaining descending options when nested values are invalid", async (t) => {
   const model = await aggregatePanel(t, { quota: { percentageMode: "invalid", otherProviders: { sortDirection: "sideways" } } })
 
-  assert.equal(item(model, "zai:5h").value, 75)
+  assert.match(model, /75%/)
 })
 
 test("forwards nested quota options into aggregate composition", async (t) => {
   const model = await aggregatePanel(t, { quota: { percentageMode: "used", otherProviders: { sortDirection: "asc" } } })
 
-  assert.equal(item(model, "zai:5h").value, 25)
+  assert.match(model, /25%/)
 })
